@@ -4,7 +4,7 @@ import {
   Clock, Check, Trash2, Pencil, LogOut, Lock, Save, PlusCircle,
   Search, ArrowLeft, Utensils, Send, RefreshCw, Package
 } from "lucide-react";
-import { storage, getStorageInitError } from "./storage";
+import { storage, getStorageInitError, authAvailable, adminSignIn, adminSignOut, getAdminSession, onAdminAuthChange, fileStorageAvailable, uploadMediaFile } from "./storage";
 
 /* ------------------------------------------------------------------ */
 /*  DEFAULT CATALOG — seeded once into shared storage on first load    */
@@ -26,7 +26,7 @@ const DEFAULT_CATALOG = {
   },
   categories: [
     {
-      id: "sandwiches", name: "Sandwiches de la Casa", emoji: "🥖",
+      id: "sandwiches", name: "Sandwiches de la Casa", emoji: "🥪",
       items: [
         { id: "lomo-carne", name: "Lomo de carne", price: 14000 },
         { id: "lomo-cerdo", name: "Lomo de cerdo", price: 14000 },
@@ -47,7 +47,7 @@ const DEFAULT_CATALOG = {
       ],
     },
     {
-      id: "mila-lili-especial", name: "Milanesa de Molida Lili", emoji: "🥪",
+      id: "mila-lili-especial", name: "Milanesa de Molida Lili", emoji: "🥖",
       items: [
         { id: "lili-simple", name: "Milanesa Lili", desc: "Completa con jamón, queso, huevo, lechuga y tomate", price: 10000 },
         { id: "lili-xl", name: "Milanesa Lili XL", price: 18000 },
@@ -216,10 +216,11 @@ const DEFAULT_CATALOG = {
   // la vieja lista única de "aderezos" por algo más parecido a un armado de
   // hamburguesería real (verduras a elección, salsas, toppings, etc.).
   modifierGroups: [
-    { id: "verduras", emoji: "🥬", name: "Verduras", options: ["Tomate", "Lechuga", "Cebolla", "Pepinillos"] },
+    { id: "verduras", emoji: "🥬", name: "Verduras", options: ["Tomate", "Lechuga", "Cebolla"] },
     { id: "aderezos", emoji: "🍯", name: "Aderezos", options: [
       "Mayonesa", "Mostaza", "Ketchup", "Salsa Golf", "Barbacoa", "Ajo", "Ají", "Morrón",
       "Queso Parmesano", "Queso Roquefort", "Panceta", "Salame", "Palta", "Cheddar",
+      "Aceituna", "Albahaca", "Apio", "4 Quesos", "Fugazzeta", "Inglesa",
     ] },
     { id: "salsas-especiales", emoji: "🌶️", name: "Salsas especiales", options: [
       "Salsa Cheddar", "Champiñón", "Brava", "Big Mac", "Monster", "Doritos",
@@ -233,6 +234,9 @@ const DEFAULT_CATALOG = {
       "Aceituna rodaja", "Choclo grano", "Criolla", "Cebolla en escabeche", "Ají en vinagre", "Berenjena en escabeche",
     ] },
   ],
+  // Promos destacadas, tipo "portada" — el admin las carga desde el panel;
+  // arranca vacío para no inventar precios que el local no confirmó.
+  promotions: [],
 };
 
 // Qué grupos de personalización se ofrecen por defecto según la categoría del
@@ -318,6 +322,10 @@ function migrateCatalog(raw) {
   }
   if (!c.platoGuarniciones) {
     c.platoGuarniciones = DEFAULT_CATALOG.platoGuarniciones;
+    changed = true;
+  }
+  if (!c.promotions) {
+    c.promotions = [];
     changed = true;
   }
 
@@ -530,18 +538,23 @@ export default function App() {
         .chip.active{background:#F2B705;color:#191310;border-color:#F2B705}
       `}</style>
 
-      {view === "shop" ? (
-        <ShopView catalog={catalog} onGoAdmin={() => setView("admin")} pushOrder={pushOrder} />
-      ) : (
-        <AdminView
-          catalog={catalog}
-          orders={orders}
-          onSaveCatalog={persistCatalog}
-          onUpdateOrder={updateOrder}
-          onRefreshOrders={refreshOrders}
-          onExit={() => setView("shop")}
-        />
-      )}
+      <div
+        className={`w-full mx-auto min-h-[700px] ${view === "shop" ? "max-w-md sm:max-w-2xl lg:max-w-5xl" : "max-w-md sm:max-w-3xl"}`}
+        style={{ background: "#191310", boxShadow: "0 0 60px rgba(0,0,0,0.5)" }}
+      >
+        {view === "shop" ? (
+          <ShopView catalog={catalog} onGoAdmin={() => setView("admin")} pushOrder={pushOrder} />
+        ) : (
+          <AdminView
+            catalog={catalog}
+            orders={orders}
+            onSaveCatalog={persistCatalog}
+            onUpdateOrder={updateOrder}
+            onRefreshOrders={refreshOrders}
+            onExit={() => setView("shop")}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -552,6 +565,29 @@ export default function App() {
 
 function ShopView({ catalog, onGoAdmin, pushOrder }) {
   const [activeCat, setActiveCat] = useState(catalog.categories[0].id);
+  const [carouselIndex, setCarouselIndex] = useState(0);
+  const [portraitMedia, setPortraitMedia] = useState({}); // { [promoId]: true } once we know it's a tall image/video
+
+  function handleMediaLoadedSize(promoId, w, h) {
+    if (w && h && h > w * 1.05) {
+      setPortraitMedia((prev) => (prev[promoId] ? prev : { ...prev, [promoId]: true }));
+    }
+  }
+
+  useEffect(() => {
+    if (!catalog.promotions || catalog.promotions.length <= 1) return;
+    const t = setInterval(() => {
+      setCarouselIndex((i) => (i + 1) % catalog.promotions.length);
+    }, 5000);
+    return () => clearInterval(t);
+  }, [catalog.promotions]);
+
+  useEffect(() => {
+    if (catalog.promotions && carouselIndex >= catalog.promotions.length) {
+      setCarouselIndex(0);
+    }
+  }, [catalog.promotions, carouselIndex]);
+
   const [cart, setCart] = useState([]); // {lineId, catId, itemId, name, variantLabel, price, qty, note}
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [pickItem, setPickItem] = useState(null); // item chosen, awaiting variant/qty modal
@@ -632,6 +668,7 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
       mode: form.mode,
       payment: form.payment,
       address: form.mode === "delivery" ? form.address : "",
+      gpsLink: form.mode === "delivery" ? (form.gpsLink || "") : "",
       note: form.note,
       status: "nuevo",
       createdAt: new Date().toISOString(),
@@ -650,7 +687,11 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
       `${order.mode === "delivery" ? `Entrega a domicilio: ${order.address}` : "Retira en el local"}\n` +
       `Pago: ${PAYMENT_LABELS[order.payment] || order.payment}\n` +
       (order.note ? `Nota: ${order.note}\n` : "") +
-      (order.mode === "delivery" ? `\n📍 Te comparto mi ubicación actual en este chat para que el cadete llegue sin problemas.\n` : "");
+      (order.mode === "delivery"
+        ? (order.gpsLink
+            ? `\n📍 Mi ubicación: ${order.gpsLink}\n`
+            : `\n📍 Te comparto mi ubicación actual en este chat para que el cadete llegue sin problemas.\n`)
+        : "");
 
     const wa = `https://wa.me/${catalog.settings.whatsapp}?text=${encodeURIComponent(msg)}`;
     window.open(wa, "_blank");
@@ -684,6 +725,118 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
             <Lock size={13} /> Panel del local
           </button>
         </div>
+
+        {/* Promo carousel — admin-managed, "portada" style, auto-advances and
+            supports manual navigation via arrows or dots. Media is shown in
+            full (never cropped) with a blurred copy of itself filling the
+            frame behind it. Tall/portrait media gets a taller frame so the
+            content stays legible instead of shrinking down to fit a short box. */}
+        {catalog.promotions && catalog.promotions.length > 0 && (() => {
+          const current = catalog.promotions[carouselIndex];
+          const hasMedia = !!(current.image || current.video);
+          const isPortrait = !!portraitMedia[current.id];
+          const heightClass = isPortrait
+            ? "h-[340px] sm:h-[420px] lg:h-[480px]"
+            : "h-[210px] sm:h-[260px] lg:h-[320px]";
+          return (
+            <div className="mt-4">
+              <div className={`relative rounded-2xl overflow-hidden transition-[height] duration-300 ${heightClass}`} style={{ background: hasMedia ? "#0A0705" : "linear-gradient(135deg, #F2B705, #D9622B)" }}>
+                {hasMedia && (
+                  <>
+                    {/* Blurred backdrop copy — fills the frame with the promo's own colors */}
+                    {current.video ? (
+                      <video src={current.video} muted autoPlay loop playsInline className="absolute inset-0 w-full h-full" style={{ objectFit: "cover", filter: "blur(20px) brightness(0.65) saturate(1.5)", transform: "scale(1.15)" }} />
+                    ) : (
+                      <img src={current.image} alt="" className="absolute inset-0 w-full h-full" style={{ objectFit: "cover", filter: "blur(20px) brightness(0.65) saturate(1.5)", transform: "scale(1.15)" }} />
+                    )}
+                    {/* Sharp copy, shown in full — never cropped */}
+                    {current.video ? (
+                      <video
+                        key={current.id}
+                        src={current.video}
+                        muted
+                        autoPlay
+                        loop
+                        playsInline
+                        className="absolute inset-0 w-full h-full"
+                        style={{ objectFit: "contain" }}
+                        onLoadedMetadata={(e) => handleMediaLoadedSize(current.id, e.target.videoWidth, e.target.videoHeight)}
+                      />
+                    ) : (
+                      <img
+                        key={current.id}
+                        src={current.image}
+                        alt=""
+                        className="absolute inset-0 w-full h-full"
+                        style={{ objectFit: "contain" }}
+                        onLoad={(e) => handleMediaLoadedSize(current.id, e.target.naturalWidth, e.target.naturalHeight)}
+                      />
+                    )}
+                  </>
+                )}
+
+                {!current.mediaHasText && (
+                  <div className="relative p-4 sm:p-6 flex flex-col justify-end h-full" style={hasMedia ? { background: "linear-gradient(0deg, rgba(10,7,5,0.75), rgba(10,7,5,0) 55%)" } : undefined}>
+                    <span
+                      className="inline-block px-2.5 py-1 rounded-full text-[10px] font-bold mb-2 self-start"
+                      style={{ background: "rgba(0,0,0,0.35)", color: "#F2B705", backdropFilter: "blur(2px)" }}
+                    >
+                      🔥 PROMO
+                    </span>
+                    <div
+                      className="font-display text-2xl sm:text-3xl leading-tight"
+                      style={{ color: hasMedia ? "#FBF3E7" : "#191310" }}
+                    >
+                      {current.title}
+                    </div>
+                    {current.subtitle && (
+                      <div
+                        className="text-xs sm:text-sm mt-1"
+                        style={{ color: hasMedia ? "#D8C9B4" : "#3A2C0A" }}
+                      >
+                        {current.subtitle}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {catalog.promotions.length > 1 && (
+                  <>
+                    <button
+                      onClick={() => setCarouselIndex((i) => (i - 1 + catalog.promotions.length) % catalog.promotions.length)}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center"
+                      style={{ background: "rgba(0,0,0,0.4)" }}
+                    >
+                      <ChevronRight size={18} color="#FBF3E7" style={{ transform: "rotate(180deg)" }} />
+                    </button>
+                    <button
+                      onClick={() => setCarouselIndex((i) => (i + 1) % catalog.promotions.length)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center"
+                      style={{ background: "rgba(0,0,0,0.4)" }}
+                    >
+                      <ChevronRight size={18} color="#FBF3E7" />
+                    </button>
+                    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5">
+                      {catalog.promotions.map((p, i) => (
+                        <button
+                          key={p.id}
+                          onClick={() => setCarouselIndex(i)}
+                          className="rounded-full transition-all"
+                          style={{
+                            width: i === carouselIndex ? 16 : 6,
+                            height: 6,
+                            background: i === carouselIndex ? "#F2B705" : "rgba(255,255,255,0.4)",
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
         <div className="flex flex-wrap gap-3 mt-4 text-[11px] c-tan2">
           <span className="flex items-center gap-1"><MapPin size={12} className="c-gold" />{catalog.settings.address}</span>
           <span className="flex items-center gap-1"><Phone size={12} className="c-gold" />{catalog.settings.phoneDisplay}</span>
@@ -727,7 +880,7 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
         {query.trim() ? (
           <>
             <div className="text-xs c-muted mb-2">{filteredItems.length} resultado(s) para "{query}"</div>
-            <div className="grid grid-cols-1 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 items-start">
               {filteredItems.map((item) => (
                 <ItemCard key={item.id + item.catName} item={item} onPick={() => setPickItem(item)} />
               ))}
@@ -739,7 +892,7 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
               <span className="text-xl">{activeCategory.emoji}</span>
               <h2 className="font-display text-xl c-gold">{activeCategory.name}</h2>
             </div>
-            <div className="grid grid-cols-1 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 items-start">
               {activeCategory.items.map((item) => (
                 <ItemCard key={item.id} item={{ ...item, catId: activeCategory.id }} onPick={() => setPickItem({ ...item, catId: activeCategory.id })} />
               ))}
@@ -865,18 +1018,44 @@ function ItemCard({ item, onPick }) {
   if (!isActive) {
     return (
       <div
-        className="w-full text-left p-4 rounded-2xl flex items-start justify-between gap-3"
+        className="w-full h-full text-left rounded-2xl overflow-hidden flex flex-col"
         style={{ background: "#1D1712", border: "1px solid #2E241D", opacity: 0.55 }}
       >
-        {photo && (
-          <img src={photo} alt="" className="w-16 h-16 rounded-xl object-cover shrink-0 grayscale" />
-        )}
-        <div className="flex-1 min-w-0">
+        {photo && <img src={photo} alt="" className="w-full aspect-[4/3] object-cover grayscale" />}
+        <div className="p-3.5">
           <div className="font-bold c-tan text-[15px] line-through">{item.name}</div>
           {item.desc && <div className="text-[12px] c-muted mt-0.5 leading-snug">{item.desc}</div>}
           <div className="text-[11px] font-bold mt-2" style={{ color: "#D62828" }}>No disponible hoy</div>
         </div>
       </div>
+    );
+  }
+
+  // Items with a real photo get a taller "showcase" card (photo on top) —
+  // looks great in the multi-column desktop grid. Items without one (most
+  // of the menu, for now) keep the compact row layout instead of showing a
+  // big empty placeholder tile.
+  if (photo) {
+    return (
+      <button
+        onClick={onPick}
+        className="w-full h-full text-left rounded-2xl overflow-hidden flex flex-col transition-transform active:scale-[0.98] hover:brightness-110"
+        style={{ background: "#241C17", border: "1px solid #2E241D" }}
+      >
+        <img src={photo} alt={item.name} className="w-full aspect-[4/3] object-cover" />
+        <div className="p-3.5 flex flex-col flex-1">
+          <div className="font-bold c-cream text-[15px] leading-snug">{item.name}</div>
+          {item.desc && <div className="text-[12px] c-tan mt-1 leading-snug">{item.desc}</div>}
+          <div className="mt-auto pt-2.5 flex items-center justify-between">
+            <span className="font-mono-t c-gold font-bold text-sm">
+              {hasVariants ? `desde ${money(displayPrice)}` : money(displayPrice)}
+            </span>
+            <span className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#F2B705" }}>
+              <Plus size={16} color="#191310" strokeWidth={2.5} />
+            </span>
+          </div>
+        </div>
+      </button>
     );
   }
 
@@ -886,9 +1065,6 @@ function ItemCard({ item, onPick }) {
       className="w-full text-left p-4 rounded-2xl flex items-start gap-3 transition-transform active:scale-[0.98]"
       style={{ background: "#241C17", border: "1px solid #2E241D" }}
     >
-      {photo && (
-        <img src={photo} alt={item.name} className="w-16 h-16 rounded-xl object-cover shrink-0" />
-      )}
       <div className="flex-1 min-w-0 flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
           <div className="font-bold c-cream text-[15px]">{item.name}</div>
@@ -905,15 +1081,44 @@ function ItemCard({ item, onPick }) {
   );
 }
 
+function ModifierGroupPicker({ groups, selected, onToggle }) {
+  return (
+    <>
+      {groups.map((group) => (
+        <div className="mb-4" key={group.id}>
+          <div className="text-xs font-bold c-gold mb-2">
+            <span className="mr-1">{group.emoji}</span>{group.name} (opcional, elegí los que quieras)
+          </div>
+          <div className="flex gap-1.5 flex-wrap max-h-32 overflow-y-auto pr-1">
+            {group.options.map((opt) => (
+              <button
+                key={opt}
+                onClick={() => onToggle(group.id, opt)}
+                className={`chip px-3 py-1.5 rounded-full text-[11px] font-bold ${(selected[group.id] || []).includes(opt) ? "active" : ""}`}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
 function ItemModal({ item, catalog, onClose, onAdd }) {
   const [variant, setVariant] = useState(item.variants ? item.variants[0] : null);
   const [qty, setQty] = useState(1);
-  const [selectedByGroup, setSelectedByGroup] = useState({}); // { [groupId]: string[] }
+  const [splitMode, setSplitMode] = useState(false);
+  const [selectedByGroup, setSelectedByGroup] = useState({}); // whole-item mode: { [groupId]: string[] }
+  const [half1Selected, setHalf1Selected] = useState({});
+  const [half2Selected, setHalf2Selected] = useState({});
   const [platoGuarnicion, setPlatoGuarnicion] = useState(null);
   const [extraNote, setExtraNote] = useState("");
   const price = variant ? variant.price : item.price;
 
   const activeGroups = (catalog.modifierGroups || []).filter((g) => (item.modifierGroupIds || []).includes(g.id));
+  const canSplit = activeGroups.length > 0 && !item.requiresGuarnicion;
 
   function toggleOption(groupId, option) {
     setSelectedByGroup((prev) => {
@@ -922,14 +1127,35 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
       return { ...prev, [groupId]: next };
     });
   }
+  function toggleHalfOption(half, groupId, option) {
+    const setter = half === 1 ? setHalf1Selected : setHalf2Selected;
+    setter((prev) => {
+      const current = prev[groupId] || [];
+      const next = current.includes(option) ? current.filter((x) => x !== option) : [...current, option];
+      return { ...prev, [groupId]: next };
+    });
+  }
 
-  const note = [
-    ...activeGroups
-      .map((g) => (selectedByGroup[g.id] && selectedByGroup[g.id].length ? `${g.name}: ${selectedByGroup[g.id].join(", ")}` : ""))
-      .filter(Boolean),
-    platoGuarnicion ? `Guarnición: ${platoGuarnicion}` : "",
-    extraNote.trim(),
-  ].filter(Boolean).join(" · ");
+  function groupsNote(sel) {
+    return activeGroups
+      .map((g) => (sel[g.id] && sel[g.id].length ? `${g.name}: ${sel[g.id].join(", ")}` : ""))
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  const note = splitMode
+    ? [
+        "Dividido en 2 mitades",
+        `Mitad 1${groupsNote(half1Selected) ? " — " + groupsNote(half1Selected) : ""}`,
+        `Mitad 2${groupsNote(half2Selected) ? " — " + groupsNote(half2Selected) : ""}`,
+        platoGuarnicion ? `Guarnición: ${platoGuarnicion}` : "",
+        extraNote.trim(),
+      ].filter(Boolean).join(" · ")
+    : [
+        groupsNote(selectedByGroup),
+        platoGuarnicion ? `Guarnición: ${platoGuarnicion}` : "",
+        extraNote.trim(),
+      ].filter(Boolean).join(" · ");
 
   const canAdd = !item.requiresGuarnicion || !!platoGuarnicion;
   const photo = item.image || PRODUCT_IMAGES[item.id];
@@ -991,24 +1217,43 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
           </div>
         )}
 
-        {activeGroups.map((group) => (
-          <div className="mb-4" key={group.id}>
-            <div className="text-xs font-bold c-gold mb-2">
-              <span className="mr-1">{group.emoji}</span>{group.name} (opcional, elegí los que quieras)
-            </div>
-            <div className="flex gap-1.5 flex-wrap max-h-32 overflow-y-auto pr-1">
-              {group.options.map((opt) => (
-                <button
-                  key={opt}
-                  onClick={() => toggleOption(group.id, opt)}
-                  className={`chip px-3 py-1.5 rounded-full text-[11px] font-bold ${(selectedByGroup[group.id] || []).includes(opt) ? "active" : ""}`}
-                >
-                  {opt}
-                </button>
-              ))}
+        {canSplit && (
+          <div className="mb-4">
+            <div className="flex gap-2">
+              <button
+                onClick={() => setSplitMode(false)}
+                className="flex-1 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5"
+                style={{ background: !splitMode ? "#F2B705" : "#2E241D", color: !splitMode ? "#191310" : "#D8C9B4" }}
+              >
+                📖 Entero igual
+              </button>
+              <button
+                onClick={() => setSplitMode(true)}
+                className="flex-1 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5"
+                style={{ background: splitMode ? "#F2B705" : "#2E241D", color: splitMode ? "#191310" : "#D8C9B4" }}
+              >
+                ✂️ Dividir en 2
+              </button>
             </div>
           </div>
-        ))}
+        )}
+
+        {!splitMode && activeGroups.length > 0 && (
+          <ModifierGroupPicker groups={activeGroups} selected={selectedByGroup} onToggle={toggleOption} />
+        )}
+
+        {splitMode && (
+          <>
+            <div className="mb-2">
+              <span className="inline-block px-3 py-1 rounded-full text-[11px] font-bold chip active">1️⃣ Mitad 1</span>
+            </div>
+            <ModifierGroupPicker groups={activeGroups} selected={half1Selected} onToggle={(g, o) => toggleHalfOption(1, g, o)} />
+            <div className="mb-2 mt-1">
+              <span className="inline-block px-3 py-1 rounded-full text-[11px] font-bold chip active">2️⃣ Mitad 2</span>
+            </div>
+            <ModifierGroupPicker groups={activeGroups} selected={half2Selected} onToggle={(g, o) => toggleHalfOption(2, g, o)} />
+          </>
+        )}
 
         <div className="mb-4">
           <div className="text-xs font-bold c-gold mb-2">Otra aclaración (opcional)</div>
@@ -1120,13 +1365,29 @@ function CheckoutModal({ total, onClose, onSubmit }) {
   const [address, setAddress] = useState("");
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
+  const [gpsLink, setGpsLink] = useState("");
+  const [gpsStatus, setGpsStatus] = useState(""); // "" | "loading" | "ok" | "error"
 
   const canSubmit = name.trim() && phone.trim() && (mode === "pickup" || address.trim());
+
+  function useMyLocation() {
+    if (!navigator.geolocation) { setGpsStatus("error"); return; }
+    setGpsStatus("loading");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        setGpsLink(`https://maps.google.com/?q=${latitude},${longitude}`);
+        setGpsStatus("ok");
+      },
+      () => setGpsStatus("error"),
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  }
 
   async function submit() {
     if (!canSubmit || sending) return;
     setSending(true);
-    await onSubmit({ mode, payment, name, phone, address, note });
+    await onSubmit({ mode, payment, name, phone, address, note, gpsLink });
     setSending(false);
   }
 
@@ -1162,9 +1423,27 @@ function CheckoutModal({ total, onClose, onSubmit }) {
           <Field label="Teléfono" value={phone} onChange={setPhone} placeholder="Ej: 387 555 5555" />
           {mode === "delivery" && <Field label="Dirección de entrega" value={address} onChange={setAddress} placeholder="Calle, número, barrio" />}
           {mode === "delivery" && (
-            <div className="p-3 rounded-xl text-xs flex items-start gap-2" style={{ background: "#2E241D", color: "#D8C9B4" }}>
-              <span className="shrink-0">📍</span>
-              <span>Si elegís Delivery, después de enviar el pedido compartinos tu ubicación actual por WhatsApp para que el cadete llegue sin problemas.</span>
+            <div>
+              <button
+                type="button"
+                onClick={useMyLocation}
+                className="text-xs font-bold flex items-center gap-1.5 mb-2"
+                style={{ color: gpsStatus === "ok" ? "#22C55E" : "#F2B705" }}
+              >
+                <MapPin size={13} />
+                {gpsStatus === "loading" ? "Buscando tu ubicación…" : gpsStatus === "ok" ? "Ubicación agregada — tocá para actualizar" : "Usar mi ubicación actual (GPS)"}
+              </button>
+              {gpsStatus === "error" && (
+                <p className="text-[11px] mb-2" style={{ color: "#EF6461" }}>No pudimos acceder a tu ubicación — no pasa nada, completá la dirección a mano.</p>
+              )}
+              <div className="p-3 rounded-xl text-xs flex items-start gap-2" style={{ background: "#2E241D", color: "#D8C9B4" }}>
+                <span className="shrink-0">📍</span>
+                <span>
+                  {gpsStatus === "ok"
+                    ? "Vas a mandar tu ubicación exacta junto con el pedido — igual, si la dirección de arriba tiene algún dato extra (piso, timbre, referencia), dejalo anotado."
+                    : "Si preferís, además de la dirección podés compartirnos tu ubicación actual por WhatsApp después de enviar el pedido, para que el cadete llegue sin problemas."}
+                </span>
+              </div>
             </div>
           )}
 
@@ -1372,14 +1651,56 @@ function playAlertBeep() {
 }
 
 function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrders, onExit }) {
-  const [authed, setAuthed] = useState(false);
+  const [session, setSession] = useState(null); // Supabase session, when auth is available
+  const [pinAuthed, setPinAuthed] = useState(false); // fallback when Supabase isn't configured
+  const [checkingSession, setCheckingSession] = useState(authAvailable);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
+  const [signingIn, setSigningIn] = useState(false);
   const [tab, setTab] = useState("orders");
   const [unseenCount, setUnseenCount] = useState(0);
   const [toast, setToast] = useState(null);
   const seenIdsRef = useRef(null);
   const toastTimerRef = useRef(null);
+
+  const authed = authAvailable ? !!session : pinAuthed;
+
+  // Restore an existing login (e.g. after a page refresh) and keep it in
+  // sync — Supabase persists the session in the browser on its own.
+  useEffect(() => {
+    if (!authAvailable) return;
+    let active = true;
+    getAdminSession().then((s) => {
+      if (active) { setSession(s); setCheckingSession(false); }
+    });
+    const unsubscribe = onAdminAuthChange((s) => setSession(s));
+    return () => { active = false; unsubscribe(); };
+  }, []);
+
+  async function submitLogin() {
+    setError("");
+    if (authAvailable) {
+      if (!email.trim() || !password) { setError("Completá usuario y contraseña."); return; }
+      setSigningIn(true);
+      try {
+        await adminSignIn(email.trim(), password);
+      } catch (e) {
+        setError(e && e.message === "Invalid login credentials" ? "Usuario o contraseña incorrectos." : (e.message || "No se pudo iniciar sesión."));
+      }
+      setSigningIn(false);
+    } else {
+      if (pin === ADMIN_PIN) setPinAuthed(true);
+      else setError("PIN incorrecto");
+    }
+  }
+
+  async function handleLogout() {
+    if (authAvailable) await adminSignOut();
+    setPinAuthed(false);
+    onExit();
+  }
 
   useEffect(() => {
     if (!authed) return;
@@ -1413,6 +1734,14 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
     if (id === "orders") setUnseenCount(0);
   }
 
+  if (checkingSession) {
+    return (
+      <div className="min-h-[600px] flex items-center justify-center">
+        <div className="c-gold text-sm animate-pulse">Verificando sesión…</div>
+      </div>
+    );
+  }
+
   if (!authed) {
     return (
       <div className="min-h-[600px] flex items-center justify-center px-5">
@@ -1421,25 +1750,53 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
             <Lock size={18} className="c-gold" />
             <span className="font-display text-xl">PANEL ADMIN</span>
           </div>
-          <input
-            value={pin}
-            onChange={(e) => { setPin(e.target.value); setError(""); }}
-            type="password"
-            placeholder="PIN de acceso"
-            className="w-full bg-surface2 rounded-xl px-4 py-3 text-center tracking-[0.3em] outline-none focus-gold c-cream mb-3"
-          />
+
+          {authAvailable ? (
+            <>
+              <input
+                value={email}
+                onChange={(e) => { setEmail(e.target.value); setError(""); }}
+                type="email"
+                placeholder="Email"
+                autoComplete="username"
+                className="w-full bg-surface2 rounded-xl px-4 py-3 outline-none focus-gold c-cream mb-3"
+              />
+              <input
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); setError(""); }}
+                type="password"
+                placeholder="Contraseña"
+                autoComplete="current-password"
+                onKeyDown={(e) => e.key === "Enter" && submitLogin()}
+                className="w-full bg-surface2 rounded-xl px-4 py-3 outline-none focus-gold c-cream mb-3"
+              />
+            </>
+          ) : (
+            <input
+              value={pin}
+              onChange={(e) => { setPin(e.target.value); setError(""); }}
+              type="password"
+              placeholder="PIN de acceso"
+              onKeyDown={(e) => e.key === "Enter" && submitLogin()}
+              className="w-full bg-surface2 rounded-xl px-4 py-3 text-center tracking-[0.3em] outline-none focus-gold c-cream mb-3"
+            />
+          )}
+
           {error && <p className="c-red text-xs text-center mb-3">{error}</p>}
           <button
-            onClick={() => (pin === ADMIN_PIN ? setAuthed(true) : setError("PIN incorrecto"))}
-            className="w-full py-3 rounded-xl font-display"
+            onClick={submitLogin}
+            disabled={signingIn}
+            className="w-full py-3 rounded-xl font-display disabled:opacity-50"
             style={{ background: "#F2B705", color: "#191310" }}
           >
-            Ingresar
+            {signingIn ? "Ingresando…" : "Ingresar"}
           </button>
           <button onClick={onExit} className="w-full py-3 mt-2 text-xs c-muted flex items-center justify-center gap-1">
             <ArrowLeft size={12} /> Volver a la tienda
           </button>
-          <p className="text-[10px] c-brown text-center mt-6">PIN de demo: {ADMIN_PIN} — cambialo antes de usar en producción.</p>
+          {!authAvailable && (
+            <p className="text-[10px] c-brown text-center mt-6">PIN de demo: {ADMIN_PIN} — esto es un modo sin base de datos conectada; configurá Supabase para tener login real.</p>
+          )}
         </div>
       </div>
     );
@@ -1468,8 +1825,8 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
           <Utensils size={18} className="c-gold" />
           <span className="font-display text-lg">ADMIN · YO PANCHO</span>
         </div>
-        <button onClick={onExit} className="text-xs c-tan flex items-center gap-1">
-          <LogOut size={13} /> Salir
+        <button onClick={handleLogout} className="text-xs c-tan flex items-center gap-1">
+          <LogOut size={13} /> {authAvailable ? "Cerrar sesión" : "Salir"}
         </button>
       </div>
 
@@ -1477,6 +1834,7 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
         {[
           { id: "orders", label: "Pedidos", icon: Package },
           { id: "menu", label: "Menú", icon: Utensils },
+          { id: "promos", label: "Promos", icon: Flame },
           { id: "settings", label: "Configuración", icon: Pencil },
         ].map((t) => (
           <button
@@ -1501,6 +1859,7 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
       <div className="px-5">
         {tab === "orders" && <OrdersPanel orders={orders} onUpdateOrder={onUpdateOrder} onRefresh={onRefreshOrders} />}
         {tab === "menu" && <MenuEditor catalog={catalog} onSave={onSaveCatalog} />}
+        {tab === "promos" && <PromosPanel catalog={catalog} onSave={onSaveCatalog} />}
         {tab === "settings" && <SettingsPanel catalog={catalog} onSave={onSaveCatalog} />}
       </div>
     </div>
@@ -1573,6 +1932,11 @@ function OrderCard({ order, onUpdateOrder }) {
             <div>📞 {order.phone}</div>
             <div>💰 {{ efectivo: "Efectivo", transferencia: "Transferencia", tarjeta: "Tarjeta" }[order.payment] || order.payment}</div>
             {order.mode === "delivery" && <div>📍 {order.address}</div>}
+            {order.gpsLink && (
+              <div>
+                <a href={order.gpsLink} target="_blank" rel="noreferrer" className="underline c-gold">🗺️ Ver ubicación exacta en el mapa</a>
+              </div>
+            )}
             {order.note && <div>📝 {order.note}</div>}
           </div>
           <div className="flex gap-1.5 flex-wrap">
@@ -1918,6 +2282,199 @@ function MenuEditor({ catalog, onSave }) {
       <button onClick={addCategory} className="w-full py-3 rounded-2xl text-sm font-bold flex items-center justify-center gap-1.5 mt-2" style={{ background: "#2E241D", color: "#F2B705" }}>
         <PlusCircle size={15} /> Nueva categoría
       </button>
+    </div>
+  );
+}
+
+function PromosPanel({ catalog, onSave }) {
+  const [title, setTitle] = useState("");
+  const [subtitle, setSubtitle] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [uploadingId, setUploadingId] = useState(null);
+  const [uploadError, setUploadError] = useState("");
+
+  async function addPromo() {
+    if (!title.trim() || saving) return;
+    setSaving(true);
+    const next = {
+      ...catalog,
+      promotions: [...(catalog.promotions || []), { id: uid(), title: title.trim(), subtitle: subtitle.trim(), image: null, video: null }],
+    };
+    await onSave(next);
+    setTitle("");
+    setSubtitle("");
+    setSaving(false);
+  }
+
+  async function removePromo(id) {
+    const next = { ...catalog, promotions: (catalog.promotions || []).filter((p) => p.id !== id) };
+    await onSave(next);
+  }
+
+  async function setPromoField(id, field, value) {
+    const next = {
+      ...catalog,
+      promotions: (catalog.promotions || []).map((p) => (p.id !== id ? p : { ...p, [field]: value })),
+    };
+    await onSave(next);
+  }
+
+  function compressImageToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const MAXW = 1000, MAXH = 500;
+          const scale = Math.min(1, MAXW / img.width, MAXH / img.height);
+          const w = Math.round(img.width * scale);
+          const h = Math.round(img.height * scale);
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL("image/jpeg", 0.82));
+        };
+        img.onerror = reject;
+        img.src = reader.result;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleImageFile(id, file) {
+    if (!file) return;
+    setUploadError("");
+    setUploadingId(id);
+    try {
+      if (fileStorageAvailable) {
+        const url = await uploadMediaFile(file, "promos");
+        await setPromoField(id, "image", url);
+      } else {
+        const dataUrl = await compressImageToDataUrl(file);
+        await setPromoField(id, "image", dataUrl);
+      }
+    } catch (e) {
+      setUploadError("No se pudo subir la foto: " + (e.message || e));
+    }
+    setUploadingId(null);
+  }
+
+  async function handleVideoFile(id, file) {
+    if (!file) return;
+    if (!fileStorageAvailable) return;
+    if (file.size > 25 * 1024 * 1024) {
+      setUploadError("El video es muy pesado (máximo 25MB) — probá recortarlo o comprimirlo antes de subirlo.");
+      return;
+    }
+    setUploadError("");
+    setUploadingId(id);
+    try {
+      const url = await uploadMediaFile(file, "promos");
+      await setPromoField(id, "video", url);
+    } catch (e) {
+      setUploadError("No se pudo subir el video: " + (e.message || e));
+    }
+    setUploadingId(null);
+  }
+
+  const promos = catalog.promotions || [];
+
+  return (
+    <div className="pb-10">
+      <p className="text-xs c-muted mb-4">
+        La primera promo de la lista se muestra grande arriba de todo, en un carrusel que rota solo — las demás se ven al tocar los puntitos o las flechas.
+        {fileStorageAvailable
+          ? " Podés subirle una foto o un video de fondo (el video tiene prioridad si cargás los dos)."
+          : " Podés subirle una foto de fondo (para video hace falta tener conectado el almacenamiento de Supabase)."}
+      </p>
+      {uploadError && <p className="text-xs mb-4" style={{ color: "#EF6461" }}>{uploadError}</p>}
+
+      <div className="space-y-2.5 mb-5">
+        {promos.map((p, idx) => (
+          <div key={p.id} className="p-3.5 rounded-xl" style={{ background: "#241C17", border: "1px solid #2E241D" }}>
+            <div className="flex items-start justify-between gap-2 mb-2.5">
+              <div className="min-w-0">
+                {idx === 0 && <span className="text-[9px] font-bold c-gold uppercase tracking-wide">★ Portada principal</span>}
+                <div className="font-bold text-sm c-cream">🔥 {p.title}</div>
+                {p.subtitle && <div className="text-xs c-tan mt-0.5">{p.subtitle}</div>}
+              </div>
+              <button onClick={() => removePromo(p.id)} className="shrink-0">
+                <Trash2 size={13} className="c-red" />
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              {p.video ? (
+                <video src={p.video} muted className="w-20 h-11 rounded-lg object-cover shrink-0" />
+              ) : p.image ? (
+                <img src={p.image} alt="" className="w-20 h-11 rounded-lg object-cover shrink-0" />
+              ) : (
+                <div className="w-20 h-11 rounded-lg shrink-0 flex items-center justify-center bg-dark c-muted text-[9px] text-center">sin media</div>
+              )}
+
+              <label className="text-[11px] font-bold px-3 py-1.5 rounded-lg cursor-pointer" style={{ background: "#191310", color: "#F2B705" }}>
+                {uploadingId === p.id ? "Subiendo…" : p.image ? "Cambiar foto" : "Subir foto"}
+                <input type="file" accept="image/*" className="hidden" disabled={uploadingId === p.id} onChange={(e) => handleImageFile(p.id, e.target.files && e.target.files[0])} />
+              </label>
+
+              {fileStorageAvailable && (
+                <label className="text-[11px] font-bold px-3 py-1.5 rounded-lg cursor-pointer" style={{ background: "#191310", color: "#F2B705" }}>
+                  {uploadingId === p.id ? "Subiendo…" : p.video ? "Cambiar video" : "Subir video"}
+                  <input type="file" accept="video/*" className="hidden" disabled={uploadingId === p.id} onChange={(e) => handleVideoFile(p.id, e.target.files && e.target.files[0])} />
+                </label>
+              )}
+
+              {p.image && !p.video && (
+                <button onClick={() => setPromoField(p.id, "image", null)} className="text-[11px] c-muted underline">Quitar foto</button>
+              )}
+              {p.video && (
+                <button onClick={() => setPromoField(p.id, "video", null)} className="text-[11px] c-muted underline">Quitar video</button>
+              )}
+            </div>
+
+            {(p.image || p.video) && (
+              <label className="flex items-center gap-2 mt-2.5 text-[11px] c-tan cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!p.mediaHasText}
+                  onChange={(e) => setPromoField(p.id, "mediaHasText", e.target.checked)}
+                  className="rounded"
+                />
+                Esta imagen/video ya tiene el texto de la promo dibujado (no mostrar el título arriba)
+              </label>
+            )}
+          </div>
+        ))}
+        {promos.length === 0 && (
+          <p className="text-xs c-muted py-4 text-center">Todavía no cargaste ninguna promo.</p>
+        )}
+      </div>
+
+      <div className="p-3.5 rounded-xl space-y-2.5" style={{ background: "#241C17", border: "1px solid #2E241D" }}>
+        <div className="text-xs font-bold c-gold">Nueva promo</div>
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Título (ej: 2 pizzas grandes por $22.000)"
+          className="w-full bg-surface2 rounded-lg px-3 py-2.5 text-sm ph-muted outline-none focus-gold c-cream"
+        />
+        <input
+          value={subtitle}
+          onChange={(e) => setSubtitle(e.target.value)}
+          placeholder="Detalle opcional (ej: válido de lunes a jueves)"
+          className="w-full bg-surface2 rounded-lg px-3 py-2.5 text-sm ph-muted outline-none focus-gold c-cream"
+        />
+        <button
+          onClick={addPromo}
+          disabled={!title.trim() || saving}
+          className="w-full py-2.5 rounded-lg text-xs font-bold disabled:opacity-40"
+          style={{ background: "#F2B705", color: "#191310" }}
+        >
+          + Agregar promo
+        </button>
+      </div>
     </div>
   );
 }

@@ -109,3 +109,64 @@ if (typeof window !== "undefined") {
       : "[YoPancho] Usando localStorage (solo este navegador) — configurá .env con tus claves de Supabase para producción real."
   );
 }
+
+/* ------------------------------------------------------------------ */
+/*  ADMIN AUTHENTICATION                                                */
+/* ------------------------------------------------------------------ */
+// Real login (email + password) via Supabase Auth, replacing the fixed PIN.
+// Only available when Supabase is configured — in local/demo mode without
+// it, the admin panel falls back to the old PIN so `npm run dev` still
+// works without setting up an account first.
+
+export const authAvailable = !!supabase;
+
+export async function adminSignIn(email, password) {
+  if (!supabase) throw new Error("Supabase no está configurado.");
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) throw error;
+  return data.session;
+}
+
+export async function adminSignOut() {
+  if (!supabase) return;
+  await supabase.auth.signOut();
+}
+
+export async function getAdminSession() {
+  if (!supabase) return null;
+  const { data } = await supabase.auth.getSession();
+  return data.session;
+}
+
+// Fires immediately with the current state, then again on every login/logout
+// (including automatic token refresh) — return value unsubscribes.
+export function onAdminAuthChange(callback) {
+  if (!supabase) return () => {};
+  const { data } = supabase.auth.onAuthStateChange((_event, session) => callback(session));
+  return () => data.subscription.unsubscribe();
+}
+
+/* ------------------------------------------------------------------ */
+/*  FILE STORAGE (photos & video for promos)                           */
+/* ------------------------------------------------------------------ */
+// Uploads a real file to a Supabase Storage bucket ("media") and returns its
+// public URL — used for promo videos and, optionally, higher-quality promo
+// photos than the compressed base64 approach used for product thumbnails.
+// Only available when Supabase is configured; the admin panel falls back
+// to the base64 approach in local/demo mode (fine for photos, not for video).
+
+export const fileStorageAvailable = !!supabase;
+
+export async function uploadMediaFile(file, folder = "promos") {
+  if (!supabase) throw new Error("Subida de archivos no disponible sin Supabase configurado.");
+  const ext = (file.name.split(".").pop() || "bin").toLowerCase();
+  const path = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const { error } = await supabase.storage.from("media").upload(path, file, {
+    cacheControl: "3600",
+    upsert: false,
+    contentType: file.type || undefined,
+  });
+  if (error) throw error;
+  const { data } = supabase.storage.from("media").getPublicUrl(path);
+  return data.publicUrl;
+}
