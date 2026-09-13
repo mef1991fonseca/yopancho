@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import {
   ShoppingBag, Plus, Minus, X, ChevronRight, Flame, MapPin,
   Check, Trash2, Pencil, LogOut, Lock, Save, PlusCircle,
-  Search, ArrowLeft, Utensils, Send, RefreshCw, Package, MessageCircle, User, Timer
+  Search, ArrowLeft, Utensils, Send, RefreshCw, Package, User, Timer
 } from "lucide-react";
 import { storage, getStorageInitError, authAvailable, adminSignIn, adminSignOut, getAdminSession, onAdminAuthChange, fileStorageAvailable, uploadMediaFile } from "./storage";
 
@@ -326,6 +326,20 @@ const PRODUCT_IMAGES = {
 
 const ADMIN_PIN = "1234";
 const money = (n) => `$${Number(n || 0).toLocaleString("es-AR")}`;
+
+// Generic "chat bubble + phone" glyph in WhatsApp's brand green — evokes the
+// app without reproducing its trademarked logo artwork.
+function WhatsAppIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 2a10 10 0 0 0-8.6 15L2 22l5.2-1.4A10 10 0 1 0 12 2Z" fill="#25D366" />
+      <path
+        d="M8.3 7.4c.2-.5.5-.5.7-.5h.5c.2 0 .4 0 .6.4.2.5.7 1.6.7 1.7.1.1.1.3 0 .4-.1.2-.1.3-.3.4-.1.2-.3.3-.4.5-.1.1-.3.3-.1.6.2.3.8 1.3 1.7 2.1 1.2 1 2.1 1.4 2.5 1.5.3.1.5.1.7-.1.2-.2.7-.8.9-1.1.2-.3.4-.2.6-.1.2.1 1.5.7 1.8.9.3.1.5.2.5.3.1.2.1.9-.2 1.7-.3.8-1.7 1.5-2.3 1.6-.6.1-1.3.2-4.1-.9-3.5-1.4-5.6-4.9-5.8-5.1-.2-.2-1.4-1.8-1.4-3.5 0-1.6.9-2.4 1.2-2.8Z"
+        fill="#ffffff"
+      />
+    </svg>
+  );
+}
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
 /* ------------------------------------------------------------------ */
@@ -677,6 +691,7 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [confirmed, setConfirmed] = useState(null);
   const [query, setQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
   const [myOrder, setMyOrder] = useState(null); // live-tracked order for this customer
   const [trackerOpen, setTrackerOpen] = useState(false);
   const [lookupOpen, setLookupOpen] = useState(false);
@@ -788,15 +803,18 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
   return (
     <div className="pb-24 lg:pb-10">
       {/* Top promo strip */}
-      <div className="text-center text-[10px] sm:text-[11px] font-bold font-mono-t py-2 px-4 tracking-wide" style={{ background: "#f2b705", color: "#0c0e16" }}>
-        🔥 ¡TODOS LOS PEDIDOS SALEN CON PAPAS FRITAS INCLUIDAS! • {catalog.settings.address.toUpperCase()} • {catalog.settings.city.toUpperCase()}
+      <div className="text-center text-[10px] sm:text-[11px] font-medium font-mono-t py-2 px-4 tracking-wide" style={{ background: "#f2b705", color: "#0c0e16" }}>
+        <Flame size={11} strokeWidth={1.5} className="inline -mt-0.5 mr-0.5" />
+        ¡TODOS LOS PEDIDOS SALEN CON PAPAS FRITAS INCLUIDAS! • {catalog.settings.address.toUpperCase()} • {catalog.settings.city.toUpperCase()}
       </div>
 
-      {/* Navbar */}
-      <div className="sticky top-0 z-20 px-4 sm:px-6 lg:px-8 py-3 flex items-center gap-4 flex-wrap font-mono-t" style={{ background: "#0c0e16", borderBottom: "1px solid #171a24" }}>
+      {/* Navbar — everything on one row; the search field collapses to an
+          icon button so "Menú Carta / Combos & Promos / Estado de Pedido"
+          have room to live right there instead of a second row. */}
+      <div className="sticky top-0 z-20 px-4 sm:px-6 lg:px-8 py-3 flex items-center gap-3 flex-wrap font-mono-t" style={{ background: "#0c0e16", borderBottom: "1px solid #171a24" }}>
         {/* Logo lockup — small badge + tiny wordmark/tagline */}
         <div className="flex items-center gap-2 shrink-0">
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "#f2b705", border: "1px solid rgba(255,255,255,0.15)" }}>
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "#f2b705", border: "1.5px solid rgba(255,255,255,0.3)" }}>
             <Flame size={18} color="#0c0e16" strokeWidth={2.5} />
           </div>
           <div className="hidden sm:block leading-none">
@@ -805,34 +823,65 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
           </div>
         </div>
 
-        {/* Bigger store name + live-ish open status */}
+        {/* Bigger store name + blinking open status */}
         <div className="hidden 2xl:block shrink-0 leading-tight">
           <div className="font-display text-base c-cream">{catalog.settings.storeName.toUpperCase()}</div>
           <div className="flex items-center gap-1.5 text-[11px] c-tan mt-0.5">
-            <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#22c55e" }} />
+            <span className="relative flex w-1.5 h-1.5">
+              <span className="absolute inline-flex h-full w-full rounded-full animate-ping" style={{ background: "#22c55e", opacity: 0.6 }} />
+              <span className="relative inline-flex w-1.5 h-1.5 rounded-full" style={{ background: "#22c55e" }} />
+            </span>
             Abierto hoy ({catalog.settings.storeHours})
           </div>
         </div>
 
-        {/* Wide search bar */}
-        <div className="flex-1 min-w-[160px] relative order-last md:order-none">
-          <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 c-muted" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar lomos, burgers, pizzas, papas…"
-            className="w-full bg-surface2 rounded-xl pl-9 pr-3 py-2.5 text-xs ph-muted outline-none focus-gold c-cream"
-          />
-        </div>
+        {/* Collapsible search — icon by default, expands into a field */}
+        {searchOpen ? (
+          <div className="relative w-full sm:w-56">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 c-muted" />
+            <input
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onBlur={() => { if (!query.trim()) setSearchOpen(false); }}
+              placeholder="Buscar lomos, burgers…"
+              className="w-full bg-surface2 rounded-xl pl-8 pr-8 py-2 text-xs ph-muted outline-none focus-gold c-cream"
+            />
+            <button
+              onClick={() => { setQuery(""); setSearchOpen(false); }}
+              className="absolute right-2 top-1/2 -translate-y-1/2 c-muted"
+              aria-label="Cerrar búsqueda"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setSearchOpen(true)}
+            className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+            style={{ background: "#171a24", border: "1px solid #232735" }}
+            aria-label="Buscar"
+          >
+            <Search size={15} className="c-tan2" />
+          </button>
+        )}
 
-        <div className="flex items-center gap-2 shrink-0">
+        {!query.trim() && (
+          <div className="hidden lg:flex items-center gap-1 text-[11px]">
+            <span className="px-3 py-2 rounded-lg font-bold" style={{ background: "#f2b705", color: "#0c0e16" }}>MENÚ CARTA</span>
+            <a href="#promos" className="px-3 py-2 rounded-lg font-bold c-tan2">COMBOS &amp; PROMOS</a>
+            <button onClick={() => setLookupOpen(true)} className="px-3 py-2 rounded-lg font-bold c-tan2">ESTADO DE PEDIDO</button>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 shrink-0 ml-auto">
           <a
             href={`https://wa.me/${catalog.settings.whatsapp}`}
             target="_blank" rel="noreferrer"
             className="hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-xl leading-tight"
             style={{ background: "#171a24", color: "#d1d5db", border: "1px solid #232735" }}
           >
-            <MessageCircle size={16} className="c-gold" />
+            <WhatsAppIcon size={18} />
             <span>
               <span className="block text-[8px] tracking-[0.1em] c-muted">WHATSAPP DIRECTO</span>
               <span className="block text-[11px] font-bold c-cream">{catalog.settings.phoneDisplay}</span>
@@ -840,15 +889,19 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
           </a>
           <button
             onClick={() => setDrawerOpen(true)}
-            className="relative flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-bold"
+            className="flex flex-col items-start gap-0.5 px-3 pt-2.5 pb-1.5 rounded-xl text-[10px] font-bold leading-tight"
             style={{ background: "#f2b705", color: "#0c0e16" }}
           >
-            {cartCount > 0 && (
-              <span className="absolute -top-1.5 -left-1.5 w-[18px] h-[18px] rounded-full flex items-center justify-center text-[9px]" style={{ background: "#0c0e16", color: "#f2b705" }}>{cartCount}</span>
-            )}
-            <ShoppingBag size={14} />
-            <span className="hidden sm:inline">CARRITO</span>
-            {cartCount > 0 && <span>{money(cartTotal)}</span>}
+            <span className="flex items-center gap-1.5">
+              <span className="relative flex items-center justify-center w-4 h-4">
+                <ShoppingBag size={14} />
+                {cartCount > 0 && (
+                  <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full flex items-center justify-center text-[7px]" style={{ background: "#0c0e16", color: "#f2b705" }}>{cartCount}</span>
+                )}
+              </span>
+              CARRITO
+            </span>
+            {cartCount > 0 && <span className="font-mono-t text-[11px]">{money(cartTotal)}</span>}
           </button>
           <button
             onClick={onGoAdmin}
@@ -860,15 +913,6 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
           </button>
         </div>
       </div>
-
-      {/* Secondary nav row — quick links, styled to match the mono header above */}
-      {!query.trim() && (
-        <div className="hidden lg:flex items-center gap-1 px-4 sm:px-6 lg:px-8 py-2 font-mono-t text-[11px]" style={{ background: "#0c0e16", borderBottom: "1px solid #171a24" }}>
-          <span className="px-3 py-1.5 rounded-lg font-bold" style={{ background: "#f2b705", color: "#0c0e16" }}>MENÚ CARTA</span>
-          <a href="#promos" className="px-3 py-1.5 rounded-lg font-bold c-tan2">COMBOS &amp; PROMOS</a>
-          <button onClick={() => setLookupOpen(true)} className="px-3 py-1.5 rounded-lg font-bold c-tan2">ESTADO DE PEDIDO</button>
-        </div>
-      )}
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Hero */}
