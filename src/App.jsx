@@ -405,13 +405,25 @@ async function loadCatalog() {
   } catch (e) { /* not found yet */ }
 
   if (!raw) {
-    await storage.set("menu-catalog", JSON.stringify(DEFAULT_CATALOG));
+    // Best-effort seed. If we're not authenticated (RLS now restricts
+    // menu-catalog writes to admins), this will fail for a first-ever
+    // anonymous visitor — that's fine, we still hand back the in-memory
+    // default so the shop renders instead of showing an error screen.
+    try {
+      await storage.set("menu-catalog", JSON.stringify(DEFAULT_CATALOG));
+    } catch (e) { /* not authenticated yet — an admin save will persist it */ }
     return DEFAULT_CATALOG;
   }
 
   const { catalog: migrated, changed } = migrateCatalog(raw);
   if (changed) {
-    await storage.set("menu-catalog", JSON.stringify(migrated));
+    // Same as above: persisting the migration is a nice-to-have, not a
+    // requirement for this page load. A logged-in admin's next save (or
+    // this same migration running again next time an admin is logged in)
+    // will write it for real.
+    try {
+      await storage.set("menu-catalog", JSON.stringify(migrated));
+    } catch (e) { /* not authenticated — keep using the migrated copy in memory */ }
   }
   return migrated;
 }
