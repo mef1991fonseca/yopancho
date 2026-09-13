@@ -20,9 +20,12 @@ const DEFAULT_CATALOG = {
   settings: {
     storeName: "Yo Pancho",
     address: "Av. San Martín 2402",
+    city: "Salta",
     phoneDisplay: "387-412-5784",
     whatsapp: "5493874125784",
     accentNote: "Todo sale con papas",
+    storeTagline: "Sandwiches · Burgers · Lomos",
+    storeHours: "19:30 - 01:00",
     heroBadgeText: "⭐ Más pedido de Salta",
     heroHeadlinePre: "LOS MEJORES",
     heroHeadlineHighlight: "LOMOS Y SÁNDWICHES",
@@ -785,62 +788,71 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
   return (
     <div className="pb-24 lg:pb-10">
       {/* Top promo strip */}
-      <div className="text-center text-[11px] sm:text-xs font-bold py-2 px-4" style={{ background: "#f2b705", color: "#0c0e16" }}>
-        🔥 ¡Todos los pedidos salen con papas incluidas! · {catalog.settings.address}
+      <div className="text-center text-[10px] sm:text-[11px] font-bold font-mono-t py-2 px-4 tracking-wide" style={{ background: "#f2b705", color: "#0c0e16" }}>
+        🔥 ¡TODOS LOS PEDIDOS SALEN CON PAPAS FRITAS INCLUIDAS! • {catalog.settings.address.toUpperCase()} • {catalog.settings.city.toUpperCase()}
       </div>
 
       {/* Navbar */}
-      <div className="sticky top-0 z-20 px-4 sm:px-6 lg:px-8 py-3 flex items-center gap-3 flex-wrap" style={{ background: "#0c0e16", borderBottom: "1px solid #171a24" }}>
+      <div className="sticky top-0 z-20 px-4 sm:px-6 lg:px-8 py-3 flex items-center gap-4 flex-wrap font-mono-t" style={{ background: "#0c0e16", borderBottom: "1px solid #171a24" }}>
+        {/* Logo lockup — small badge + tiny wordmark/tagline */}
         <div className="flex items-center gap-2 shrink-0">
-          <div className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: "#f2b705" }}>
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "#f2b705", border: "1px solid rgba(255,255,255,0.15)" }}>
             <Flame size={18} color="#0c0e16" strokeWidth={2.5} />
           </div>
-          <div>
-            <div className="font-display text-base leading-none c-cream">YO PANCHO</div>
-            <div className="text-[10px] c-tan tracking-wide">{catalog.settings.accentNote}</div>
+          <div className="hidden sm:block leading-none">
+            <div className="font-bold text-[11px] tracking-wide c-cream">YO <span className="c-gold">PANCHO</span></div>
+            <div className="text-[8px] c-muted tracking-[0.15em] mt-0.5">{catalog.settings.storeTagline.toUpperCase()}</div>
           </div>
         </div>
 
-        <div className="hidden lg:flex items-center gap-1 ml-2">
-          <span className="px-3.5 py-2 rounded-full text-xs font-bold" style={{ background: "#f2b705", color: "#0c0e16" }}>Menú Carta</span>
-          <a href="#promos" className="px-3.5 py-2 rounded-full text-xs font-bold c-tan2">Combos &amp; Promos</a>
-          <button onClick={() => setLookupOpen(true)} className="px-3.5 py-2 rounded-full text-xs font-bold c-tan2">Estado de Pedido</button>
+        {/* Bigger store name + live-ish open status */}
+        <div className="hidden 2xl:block shrink-0 leading-tight">
+          <div className="font-display text-base c-cream">{catalog.settings.storeName.toUpperCase()}</div>
+          <div className="flex items-center gap-1.5 text-[11px] c-tan mt-0.5">
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#22c55e" }} />
+            Abierto hoy ({catalog.settings.storeHours})
+          </div>
         </div>
 
-        <div className="flex-1 min-w-[140px] relative order-last lg:order-none lg:max-w-xs">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 c-muted" />
+        {/* Wide search bar */}
+        <div className="flex-1 min-w-[160px] relative order-last md:order-none">
+          <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 c-muted" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar en el menú…"
-            className="w-full bg-surface2 rounded-full pl-8 pr-3 py-2 text-xs ph-muted outline-none focus-gold c-cream"
+            placeholder="Buscar lomos, burgers, pizzas, papas…"
+            className="w-full bg-surface2 rounded-xl pl-9 pr-3 py-2.5 text-xs ph-muted outline-none focus-gold c-cream"
           />
         </div>
 
-        <div className="flex items-center gap-2 ml-auto shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           <a
             href={`https://wa.me/${catalog.settings.whatsapp}`}
             target="_blank" rel="noreferrer"
-            className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-full text-[11px] font-bold"
+            className="hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-xl leading-tight"
             style={{ background: "#171a24", color: "#d1d5db", border: "1px solid #232735" }}
           >
-            <MessageCircle size={13} className="c-gold" /> {catalog.settings.phoneDisplay}
+            <MessageCircle size={16} className="c-gold" />
+            <span>
+              <span className="block text-[8px] tracking-[0.1em] c-muted">WHATSAPP DIRECTO</span>
+              <span className="block text-[11px] font-bold c-cream">{catalog.settings.phoneDisplay}</span>
+            </span>
           </a>
           <button
             onClick={() => setDrawerOpen(true)}
-            className="relative flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-bold"
+            className="relative flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-bold"
             style={{ background: "#f2b705", color: "#0c0e16" }}
           >
+            {cartCount > 0 && (
+              <span className="absolute -top-1.5 -left-1.5 w-[18px] h-[18px] rounded-full flex items-center justify-center text-[9px]" style={{ background: "#0c0e16", color: "#f2b705" }}>{cartCount}</span>
+            )}
             <ShoppingBag size={14} />
             <span className="hidden sm:inline">CARRITO</span>
-            {cartCount > 0 && <span className="font-mono-t">{money(cartTotal)}</span>}
-            {cartCount > 0 && (
-              <span className="absolute -top-1.5 -right-1.5 w-[18px] h-[18px] rounded-full flex items-center justify-center text-[9px]" style={{ background: "#0c0e16", color: "#f2b705" }}>{cartCount}</span>
-            )}
+            {cartCount > 0 && <span>{money(cartTotal)}</span>}
           </button>
           <button
             onClick={onGoAdmin}
-            className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
+            className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
             style={{ background: "#171a24", color: "#d1d5db", border: "1px solid #232735" }}
             aria-label="Panel del local"
           >
@@ -848,6 +860,15 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
           </button>
         </div>
       </div>
+
+      {/* Secondary nav row — quick links, styled to match the mono header above */}
+      {!query.trim() && (
+        <div className="hidden lg:flex items-center gap-1 px-4 sm:px-6 lg:px-8 py-2 font-mono-t text-[11px]" style={{ background: "#0c0e16", borderBottom: "1px solid #171a24" }}>
+          <span className="px-3 py-1.5 rounded-lg font-bold" style={{ background: "#f2b705", color: "#0c0e16" }}>MENÚ CARTA</span>
+          <a href="#promos" className="px-3 py-1.5 rounded-lg font-bold c-tan2">COMBOS &amp; PROMOS</a>
+          <button onClick={() => setLookupOpen(true)} className="px-3 py-1.5 rounded-lg font-bold c-tan2">ESTADO DE PEDIDO</button>
+        </div>
+      )}
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Hero */}
@@ -2999,6 +3020,9 @@ function SettingsPanel({ catalog, onSave }) {
       <Field label="Teléfono (a mostrar)" value={s.phoneDisplay} onChange={(v) => set("phoneDisplay", v)} />
       <Field label="WhatsApp (solo números, con código de país, ej: 5493874125784)" value={s.whatsapp} onChange={(v) => set("whatsapp", v)} />
       <Field label="Frase destacada" value={s.accentNote} onChange={(v) => set("accentNote", v)} />
+      <Field label="Ciudad" value={s.city} onChange={(v) => set("city", v)} />
+      <Field label="Bajada del logo (ej: Sandwiches · Burgers · Lomos)" value={s.storeTagline} onChange={(v) => set("storeTagline", v)} />
+      <Field label="Horario (ej: 19:30 - 01:00)" value={s.storeHours} onChange={(v) => set("storeHours", v)} />
 
       <div className="pt-4 mt-4" style={{ borderTop: "1px solid #232735" }}>
         <div className="font-display text-sm c-cream mb-3">Portada (sección grande de arriba del menú)</div>
