@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
-  ShoppingBag, Plus, Minus, X, ChevronRight, Flame, MapPin, Phone,
-  Clock, Check, Trash2, Pencil, LogOut, Lock, Save, PlusCircle,
-  Search, ArrowLeft, Utensils, Send, RefreshCw, Package
+  ShoppingBag, Plus, Minus, X, ChevronRight, Flame, MapPin,
+  Check, Trash2, Pencil, LogOut, Lock, Save, PlusCircle,
+  Search, ArrowLeft, Utensils, Send, RefreshCw, Package, MessageCircle, User, Timer
 } from "lucide-react";
 import { storage, getStorageInitError, authAvailable, adminSignIn, adminSignOut, getAdminSession, onAdminAuthChange, fileStorageAvailable, uploadMediaFile } from "./storage";
 
@@ -23,6 +23,13 @@ const DEFAULT_CATALOG = {
     phoneDisplay: "387-412-5784",
     whatsapp: "5493874125784",
     accentNote: "Todo sale con papas",
+    heroBadgeText: "⭐ Más pedido de Salta",
+    heroHeadlinePre: "LOS MEJORES",
+    heroHeadlineHighlight: "LOMOS Y SÁNDWICHES",
+    heroHeadlinePost: "DE LA CIUDAD.",
+    heroSubtitle: "", // empty = use the featured item's description automatically
+    heroDeliveryNote: "20-30 min demora",
+    heroFeaturedItemId: "", // empty = auto-pick the first active item with a photo
   },
   categories: [
     {
@@ -148,9 +155,9 @@ const DEFAULT_CATALOG = {
     {
       id: "plato", name: "Comida al Plato", emoji: "🍖",
       items: [
-        { id: "plato-mila-napo", name: "Milanesa napolitana", desc: "Carne, pollo o cerdo", price: 14000 },
-        { id: "plato-mila-caballo", name: "Milanesa a caballo", desc: "Carne, pollo o cerdo", price: 14000 },
-        { id: "plato-costeleta", name: "Costeleta a caballo", desc: "Carne o cerdo", price: 14000 },
+        { id: "plato-mila-napo", name: "Milanesa napolitana", desc: "Carne, pollo o cerdo", proteinChoices: ["Carne", "Pollo", "Cerdo"], price: 14000 },
+        { id: "plato-mila-caballo", name: "Milanesa a caballo", desc: "Carne, pollo o cerdo", proteinChoices: ["Carne", "Pollo", "Cerdo"], price: 14000 },
+        { id: "plato-costeleta", name: "Costeleta a caballo", desc: "Carne o cerdo", proteinChoices: ["Carne", "Cerdo"], price: 14000 },
         { id: "plato-2hamburguesas", name: "2 Hamburguesas caseras a caballo", desc: "Con papas fritas y huevo frito", price: 14000 },
         { id: "plato-bife-pollo", name: "Bife de pollo", desc: "Guarnición a elección", requiresGuarnicion: true, price: 12000 },
         { id: "plato-lomo-caballo", name: "Lomo a caballo", desc: "Con papas fritas y huevo frito", price: 14000 },
@@ -210,7 +217,14 @@ const DEFAULT_CATALOG = {
   ],
   // Guarnición a elección para "Comida al Plato" — un solo lado por plato
   // (distinto de los grupos de personalización de abajo, que son opcionales).
-  platoGuarniciones: ["Papas fritas", "Puré", "Arroz", "Papa y huevo"],
+  // Cada opción puede desactivarse temporalmente (ej: "no queda arroz esta
+  // noche") sin borrarla del todo — ver "active" más abajo.
+  platoGuarniciones: [
+    { label: "Papas fritas", active: true },
+    { label: "Puré", active: true },
+    { label: "Arroz", active: true },
+    { label: "Papa y huevo", active: true },
+  ],
   // Grupos de personalización reutilizables: cada producto elige (desde el
   // panel admin) cuáles de estos grupos se le ofrecen al cliente. Reemplaza
   // la vieja lista única de "aderezos" por algo más parecido a un armado de
@@ -260,6 +274,15 @@ const CATEGORY_DEFAULT_MODIFIER_GROUPS = {
 // items nobody has customized yet — see migrateCatalog() below.
 const MODIFIER_DEFAULTS_VERSION = 2;
 
+// Items that need a required protein-type choice (Carne/Pollo/Cerdo), used
+// both by DEFAULT_CATALOG and to backfill catalogs saved before this field
+// existed — see migrateCatalog() below.
+const PROTEIN_CHOICES_BY_ITEM_ID = {
+  "plato-mila-napo": ["Carne", "Pollo", "Cerdo"],
+  "plato-mila-caballo": ["Carne", "Pollo", "Cerdo"],
+  "plato-costeleta": ["Carne", "Cerdo"],
+};
+
 DEFAULT_CATALOG.categories = DEFAULT_CATALOG.categories.map((c) => ({
   ...c,
   items: c.items.map((it) => ({
@@ -269,10 +292,10 @@ DEFAULT_CATALOG.categories = DEFAULT_CATALOG.categories.map((c) => ({
 }));
 
 const ORDER_STATUSES = [
-  { id: "nuevo", label: "Nuevo", color: "#F2B705" },
-  { id: "preparando", label: "Preparando", color: "#3B82F6" },
-  { id: "listo", label: "Listo", color: "#22C55E" },
-  { id: "entregado", label: "Entregado", color: "#6B7280" },
+  { id: "nuevo", label: "Nuevo", color: "#f2b705" },
+  { id: "preparando", label: "Preparando", color: "#3b82f6" },
+  { id: "listo", label: "Listo", color: "#22c55e" },
+  { id: "entregado", label: "Entregado", color: "#6b7280" },
 ];
 
 // Real product photos extracted from the menu flyers, keyed by item id.
@@ -323,27 +346,46 @@ function migrateCatalog(raw) {
   if (!c.platoGuarniciones) {
     c.platoGuarniciones = DEFAULT_CATALOG.platoGuarniciones;
     changed = true;
+  } else if (typeof c.platoGuarniciones[0] === "string") {
+    // Old format was a plain list of strings — upgrade to objects so each
+    // option can be toggled active/inactive without losing the rest.
+    c.platoGuarniciones = c.platoGuarniciones.map((label) => ({ label, active: true }));
+    changed = true;
   }
   if (!c.promotions) {
     c.promotions = [];
     changed = true;
+  }
+  {
+    const mergedSettings = { ...DEFAULT_CATALOG.settings, ...(c.settings || {}) };
+    if (JSON.stringify(mergedSettings) !== JSON.stringify(c.settings || {})) {
+      c.settings = mergedSettings;
+      changed = true;
+    }
   }
 
   c.categories = (c.categories || []).map((cat) => ({
     ...cat,
     items: cat.items.map((it) => {
       const defaults = CATEGORY_DEFAULT_MODIFIER_GROUPS[cat.id] || [];
-      if (!it.modifierGroupIds) {
+      let next = it;
+      if (!next.modifierGroupIds) {
         changed = true;
-        return { ...it, modifierGroupIds: defaults };
-      }
-      // Only touch items nobody has customized yet (still at the empty/default
-      // state) — never overwrite a product the admin deliberately edited.
-      if (needsRefresh && it.modifierGroupIds.length === 0 && defaults.length > 0) {
+        next = { ...next, modifierGroupIds: defaults };
+      } else if (needsRefresh && next.modifierGroupIds.length === 0 && defaults.length > 0) {
+        // Only touch items nobody has customized yet (still at the empty/default
+        // state) — never overwrite a product the admin deliberately edited.
         changed = true;
-        return { ...it, modifierGroupIds: defaults };
+        next = { ...next, modifierGroupIds: defaults };
       }
-      return it;
+      // Backfill fields added to specific catalog items after this catalog was
+      // first saved (e.g. "elegí carne/pollo/cerdo" on plate items) — these are
+      // brand-new fields, so it's always safe to add them if still missing.
+      if (!next.proteinChoices && PROTEIN_CHOICES_BY_ITEM_ID[next.id]) {
+        changed = true;
+        next = { ...next, proteinChoices: PROTEIN_CHOICES_BY_ITEM_ID[next.id] };
+      }
+      return next;
     }),
   }));
 
@@ -474,9 +516,9 @@ export default function App() {
 
   if (loadError) {
     return (
-      <div style={{ background: "#191310" }} className="w-full h-full min-h-[600px] flex items-center justify-center px-6">
-        <div className="max-w-md w-full rounded-2xl p-5" style={{ background: "#241C17", border: "1px solid #4A2020" }}>
-          <div className="font-bold mb-2" style={{ color: "#EF6461" }}>No se pudo conectar con la base de datos</div>
+      <div style={{ background: "#0c0e16" }} className="w-full h-full min-h-[600px] flex items-center justify-center px-6">
+        <div className="max-w-md w-full rounded-2xl p-5" style={{ background: "#11131b", border: "1px solid #7f1d1d" }}>
+          <div className="font-bold mb-2" style={{ color: "#f87171" }}>No se pudo conectar con la base de datos</div>
           <div className="text-xs c-tan mb-3 font-mono-t break-words">{loadError}</div>
           <div className="text-xs c-muted leading-relaxed">
             Revisá, en este orden:
@@ -492,20 +534,22 @@ export default function App() {
 
   if (!ready) {
     return (
-      <div style={{ background: "#191310" }} className="w-full h-full min-h-[600px] flex items-center justify-center">
+      <div style={{ background: "#0c0e16" }} className="w-full h-full min-h-[600px] flex items-center justify-center">
         <div className="c-gold font-semibold tracking-wide animate-pulse">Cargando Yo Pancho…</div>
       </div>
     );
   }
 
   return (
-    <div style={{ background: "#191310", fontFamily: "'DM Sans', sans-serif" }} className="w-full min-h-[700px] c-cream">
+    <div style={{ background: "#0c0e16", fontFamily: "'Montserrat', sans-serif" }} className="w-full min-h-[700px] c-cream">
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Anton&family=DM+Sans:wght@400;500;700;900&family=JetBrains+Mono:wght@400;600;700&display=swap');
-        .font-display { font-family: 'Anton', sans-serif; letter-spacing: 0.02em; }
+        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800;900&family=Montserrat:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap');
+        .font-display { font-family: 'Syne', sans-serif; letter-spacing: 0.01em; font-weight: 800; }
         .font-mono-t { font-family: 'JetBrains Mono', monospace; }
+        .rounded-2xl, .rounded-3xl, .rounded-t-3xl { border-radius: 14px !important; }
+        @keyframes promoProgress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
         .ticket-edge {
-          background-image: radial-gradient(circle at 8px 0, transparent 8px, #FBF3E7 8.5px);
+          background-image: radial-gradient(circle at 8px 0, transparent 8px, #ffffff 8.5px);
           background-size: 16px 16px;
           background-position: top;
           background-repeat: repeat-x;
@@ -515,32 +559,32 @@ export default function App() {
 
         /* Real CSS color utilities — this environment doesn't compile Tailwind
            arbitrary-value classes like text-[#hex], so colors live here instead. */
-        .c-gold{color:#F2B705}
-        .c-cream{color:#FBF3E7}
-        .c-tan{color:#B8A98F}
-        .c-tan2{color:#D8C9B4}
-        .c-muted{color:#6B5D4F}
-        .c-muted2{color:#7A6C58}
-        .c-dark{color:#191310}
-        .c-red{color:#EF6461}
-        .c-red2{color:#C1443E}
-        .c-brown{color:#4A3C2E}
-        .bg-surface2{background:#2E241D}
-        .bg-dark{background:#191310}
-        .b-gold{border-color:#F2B705}
-        .ph-muted::placeholder{color:#6B5D4F}
-        .focus-gold:focus{outline:none;box-shadow:0 0 0 2px #F2B705}
+        .c-gold{color:#f2b705}
+        .c-cream{color:#ffffff}
+        .c-tan{color:#9ca3af}
+        .c-tan2{color:#d1d5db}
+        .c-muted{color:#6b7280}
+        .c-muted2{color:#6b7280}
+        .c-dark{color:#0c0e16}
+        .c-red{color:#f87171}
+        .c-red2{color:#b91c1c}
+        .c-brown{color:#232735}
+        .bg-surface2{background:#171a24}
+        .bg-dark{background:#0c0e16}
+        .b-gold{border-color:#f2b705}
+        .ph-muted::placeholder{color:#6b7280}
+        .focus-gold:focus{outline:none;box-shadow:0 0 0 2px #f2b705}
 
         .chip{
-          background:#2E241D;color:#D8C9B4;border:1px solid #3A2F26;
+          background:#171a24;color:#d1d5db;border:1px solid #232735;
           transition:background .15s ease, color .15s ease;
         }
-        .chip.active{background:#F2B705;color:#191310;border-color:#F2B705}
+        .chip.active{background:#f2b705;color:#0c0e16;border-color:#f2b705}
       `}</style>
 
       <div
         className={`w-full mx-auto min-h-[700px] ${view === "shop" ? "max-w-md sm:max-w-2xl lg:max-w-5xl" : "max-w-md sm:max-w-3xl"}`}
-        style={{ background: "#191310", boxShadow: "0 0 60px rgba(0,0,0,0.5)" }}
+        style={{ background: "#0c0e16", boxShadow: "0 0 60px rgba(0,0,0,0.5)" }}
       >
         {view === "shop" ? (
           <ShopView catalog={catalog} onGoAdmin={() => setView("admin")} pushOrder={pushOrder} />
@@ -566,6 +610,8 @@ export default function App() {
 function ShopView({ catalog, onGoAdmin, pushOrder }) {
   const [activeCat, setActiveCat] = useState(catalog.categories[0].id);
   const [carouselIndex, setCarouselIndex] = useState(0);
+  const [carouselPaused, setCarouselPaused] = useState(false);
+  const touchXRef = useRef(null);
   const [portraitMedia, setPortraitMedia] = useState({}); // { [promoId]: true } once we know it's a tall image/video
 
   function handleMediaLoadedSize(promoId, w, h) {
@@ -574,13 +620,26 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
     }
   }
 
+  function handleCarouselTouchStart(e) {
+    touchXRef.current = e.touches[0].clientX;
+  }
+  function handleCarouselTouchEnd(e, count) {
+    if (touchXRef.current == null) return;
+    const dx = e.changedTouches[0].clientX - touchXRef.current;
+    if (Math.abs(dx) > 40) {
+      if (dx < 0) setCarouselIndex((i) => (i + 1) % count);
+      else setCarouselIndex((i) => (i - 1 + count) % count);
+    }
+    touchXRef.current = null;
+  }
+
   useEffect(() => {
-    if (!catalog.promotions || catalog.promotions.length <= 1) return;
+    if (carouselPaused || !catalog.promotions || catalog.promotions.length <= 1) return;
     const t = setInterval(() => {
       setCarouselIndex((i) => (i + 1) % catalog.promotions.length);
     }, 5000);
     return () => clearInterval(t);
-  }, [catalog.promotions]);
+  }, [catalog.promotions, carouselPaused]);
 
   useEffect(() => {
     if (catalog.promotions && carouselIndex >= catalog.promotions.length) {
@@ -590,6 +649,7 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
 
   const [cart, setCart] = useState([]); // {lineId, catId, itemId, name, variantLabel, price, qty, note}
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [orderMode, setOrderMode] = useState("delivery"); // "delivery" | "pickup" — chosen from the sidebar/drawer, seeds checkout
   const [pickItem, setPickItem] = useState(null); // item chosen, awaiting variant/qty modal
 
   // If the admin marks the open item "agotado" while the customer has it open, close it.
@@ -703,131 +763,268 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
     setDrawerOpen(false);
   }
 
+  const allItemsFlat = catalog.categories.flatMap((c) => c.items.map((i) => ({ ...i, catId: c.id })));
+  const heroItem = (catalog.settings.heroFeaturedItemId && allItemsFlat.find((i) => i.id === catalog.settings.heroFeaturedItemId && i.active !== false))
+    || allItemsFlat.find((i) => i.active !== false && (i.image || PRODUCT_IMAGES[i.id]));
+  const heroPhoto = heroItem && (heroItem.image || PRODUCT_IMAGES[heroItem.id]);
+  const heroPrice = heroItem ? (heroItem.variants ? heroItem.variants[0].price : heroItem.price) : null;
+  const showAll = activeCat === "__all__";
+
   return (
-    <div className="pb-28">
-      {/* Header */}
-      <div className="px-5 pt-6 pb-4 relative overflow-hidden" style={{ background: "linear-gradient(160deg,#241C17,#191310)" }}>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: "#F2B705" }}>
-              <Flame size={20} color="#191310" strokeWidth={2.5} />
-            </div>
-            <div>
-              <div className="font-display text-2xl leading-none c-cream">YO PANCHO</div>
-              <div className="text-[11px] c-tan2 tracking-wide">Sandwiches · Burgers · Pizzas</div>
-            </div>
+    <div className="pb-24 lg:pb-10">
+      {/* Top promo strip */}
+      <div className="text-center text-[11px] sm:text-xs font-bold py-2 px-4" style={{ background: "#f2b705", color: "#0c0e16" }}>
+        🔥 ¡Todos los pedidos salen con papas incluidas! · {catalog.settings.address}
+      </div>
+
+      {/* Navbar */}
+      <div className="sticky top-0 z-20 px-4 sm:px-6 lg:px-8 py-3 flex items-center gap-3 flex-wrap" style={{ background: "#0c0e16", borderBottom: "1px solid #171a24" }}>
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: "#f2b705" }}>
+            <Flame size={18} color="#0c0e16" strokeWidth={2.5} />
           </div>
-          <button
-            onClick={onGoAdmin}
-            className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-bold"
-            style={{ background: "#2E241D", color: "#D8C9B4", border: "1px solid #4A3C2E" }}
-          >
-            <Lock size={13} /> Panel del local
-          </button>
+          <div>
+            <div className="font-display text-base leading-none c-cream">YO PANCHO</div>
+            <div className="text-[10px] c-tan tracking-wide">{catalog.settings.accentNote}</div>
+          </div>
         </div>
 
-        {/* Promo carousel — admin-managed, "portada" style, auto-advances and
-            supports manual navigation via arrows or dots. Media is shown in
-            full (never cropped) with a blurred copy of itself filling the
-            frame behind it. Tall/portrait media gets a taller frame so the
-            content stays legible instead of shrinking down to fit a short box. */}
-        {catalog.promotions && catalog.promotions.length > 0 && (() => {
-          const current = catalog.promotions[carouselIndex];
-          const hasMedia = !!(current.image || current.video);
+        <div className="hidden lg:flex items-center gap-1 ml-2">
+          <span className="px-3.5 py-2 rounded-full text-xs font-bold" style={{ background: "#f2b705", color: "#0c0e16" }}>Menú Carta</span>
+          <a href="#promos" className="px-3.5 py-2 rounded-full text-xs font-bold c-tan2">Combos &amp; Promos</a>
+          <button onClick={() => setLookupOpen(true)} className="px-3.5 py-2 rounded-full text-xs font-bold c-tan2">Estado de Pedido</button>
+        </div>
+
+        <div className="flex-1 min-w-[140px] relative order-last lg:order-none lg:max-w-xs">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 c-muted" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Buscar en el menú…"
+            className="w-full bg-surface2 rounded-full pl-8 pr-3 py-2 text-xs ph-muted outline-none focus-gold c-cream"
+          />
+        </div>
+
+        <div className="flex items-center gap-2 ml-auto shrink-0">
+          <a
+            href={`https://wa.me/${catalog.settings.whatsapp}`}
+            target="_blank" rel="noreferrer"
+            className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-full text-[11px] font-bold"
+            style={{ background: "#171a24", color: "#d1d5db", border: "1px solid #232735" }}
+          >
+            <MessageCircle size={13} className="c-gold" /> {catalog.settings.phoneDisplay}
+          </a>
+          <button
+            onClick={() => setDrawerOpen(true)}
+            className="relative flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-bold"
+            style={{ background: "#f2b705", color: "#0c0e16" }}
+          >
+            <ShoppingBag size={14} />
+            <span className="hidden sm:inline">CARRITO</span>
+            {cartCount > 0 && <span className="font-mono-t">{money(cartTotal)}</span>}
+            {cartCount > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 w-[18px] h-[18px] rounded-full flex items-center justify-center text-[9px]" style={{ background: "#0c0e16", color: "#f2b705" }}>{cartCount}</span>
+            )}
+          </button>
+          <button
+            onClick={onGoAdmin}
+            className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
+            style={{ background: "#171a24", color: "#d1d5db", border: "1px solid #232735" }}
+            aria-label="Panel del local"
+          >
+            <User size={15} />
+          </button>
+        </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        {/* Hero */}
+        {!query.trim() && (
+          <div className="grid lg:grid-cols-2 gap-8 items-center py-8">
+            <div className="min-w-0">
+              <div className="flex flex-wrap gap-2 mb-4">
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold" style={{ background: "#171a24", color: "#f2b705" }}>{catalog.settings.heroBadgeText}</span>
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold" style={{ background: "#171a24", color: "#f87171" }}>🌶 {catalog.settings.accentNote}</span>
+              </div>
+              <h1 className="font-display text-2xl sm:text-3xl lg:text-4xl leading-[1.15] break-words c-cream">
+                {catalog.settings.heroHeadlinePre}{" "}
+                <span className="c-gold">{catalog.settings.heroHeadlineHighlight}</span>{" "}
+                {catalog.settings.heroHeadlinePost}
+              </h1>
+              <p className="c-tan2 text-sm mt-4 max-w-md leading-relaxed">
+                {catalog.settings.heroSubtitle?.trim()
+                  ? catalog.settings.heroSubtitle
+                  : (heroItem && heroItem.desc ? heroItem.desc : "Carnes premium a la plancha, papas rústicas doradas y el sabor callejero nocturno de Salta, directo a tu puerta.")}
+              </p>
+              <div className="flex flex-wrap gap-3 mt-6">
+                <button
+                  onClick={() => heroItem && setPickItem(heroItem)}
+                  className="flex items-center gap-2 px-5 py-3 rounded-xl font-display text-sm"
+                  style={{ background: "#f2b705", color: "#0c0e16" }}
+                >
+                  <ShoppingBag size={16} /> PEDIR AHORA {heroPrice ? `· ${money(heroPrice)}` : ""}
+                </button>
+                {catalog.promotions && catalog.promotions.length > 0 && (
+                  <a href="#promos" className="flex items-center gap-2 px-5 py-3 rounded-xl font-display text-sm" style={{ background: "#171a24", color: "#d1d5db" }}>
+                    VER PROMOCIONES
+                  </a>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 mt-4 c-tan text-[11px]">
+                <Timer size={13} className="c-gold" /> {catalog.settings.heroDeliveryNote}
+              </div>
+            </div>
+
+            {heroPhoto && (
+              <div
+                className="relative rounded-2xl overflow-hidden aspect-[4/3] min-w-0"
+                style={{ boxShadow: "0 30px 60px -25px rgba(0,0,0,0.75)", border: "1px solid rgba(255,255,255,0.08)" }}
+              >
+                <img src={heroPhoto} alt={heroItem.name} className="absolute inset-0 w-full h-full object-cover" />
+                {/* Soft edge vignette — helps any photo (bright or busy backgrounds included) blend into the dark page instead of cutting hard against it */}
+                <div className="absolute inset-0 pointer-events-none" style={{ boxShadow: "inset 0 0 70px 12px rgba(5,6,10,0.55)" }} />
+                <div className="absolute inset-0 pointer-events-none" style={{ background: "linear-gradient(180deg, rgba(5,6,10,0.25) 0%, rgba(5,6,10,0) 25%, rgba(5,6,10,0) 70%, rgba(5,6,10,0.35) 100%)" }} />
+                <span className="absolute top-3 right-3 px-3 py-1.5 rounded-lg text-right" style={{ background: "rgba(12,14,22,0.8)" }}>
+                  <span className="block text-[9px] c-tan2 tracking-wide">ESPECIALIDAD</span>
+                  <span className="block font-display text-sm c-gold">{heroItem.name}</span>
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Promo carousel — admin-managed. Slides sit in a single flex track
+            that slides via transform, so switching promos is a smooth glide
+            instead of an instant cut. Each slide keeps its own blurred
+            backdrop + "shown in full" sharp copy, and portrait media widens
+            the frame's height so nothing gets cropped or shrunk illegibly. */}
+        {!query.trim() && catalog.promotions && catalog.promotions.length > 0 && (() => {
+          const promos = catalog.promotions;
+          const current = promos[carouselIndex];
           const isPortrait = !!portraitMedia[current.id];
           const heightClass = isPortrait
             ? "h-[340px] sm:h-[420px] lg:h-[480px]"
             : "h-[210px] sm:h-[260px] lg:h-[320px]";
           return (
-            <div className="mt-4">
-              <div className={`relative rounded-2xl overflow-hidden transition-[height] duration-300 ${heightClass}`} style={{ background: hasMedia ? "#0A0705" : "linear-gradient(135deg, #F2B705, #D9622B)" }}>
-                {hasMedia && (
-                  <>
-                    {/* Blurred backdrop copy — fills the frame with the promo's own colors */}
-                    {current.video ? (
-                      <video src={current.video} muted autoPlay loop playsInline className="absolute inset-0 w-full h-full" style={{ objectFit: "cover", filter: "blur(20px) brightness(0.65) saturate(1.5)", transform: "scale(1.15)" }} />
-                    ) : (
-                      <img src={current.image} alt="" className="absolute inset-0 w-full h-full" style={{ objectFit: "cover", filter: "blur(20px) brightness(0.65) saturate(1.5)", transform: "scale(1.15)" }} />
-                    )}
-                    {/* Sharp copy, shown in full — never cropped */}
-                    {current.video ? (
-                      <video
-                        key={current.id}
-                        src={current.video}
-                        muted
-                        autoPlay
-                        loop
-                        playsInline
-                        className="absolute inset-0 w-full h-full"
-                        style={{ objectFit: "contain" }}
-                        onLoadedMetadata={(e) => handleMediaLoadedSize(current.id, e.target.videoWidth, e.target.videoHeight)}
-                      />
-                    ) : (
-                      <img
-                        key={current.id}
-                        src={current.image}
-                        alt=""
-                        className="absolute inset-0 w-full h-full"
-                        style={{ objectFit: "contain" }}
-                        onLoad={(e) => handleMediaLoadedSize(current.id, e.target.naturalWidth, e.target.naturalHeight)}
-                      />
-                    )}
-                  </>
-                )}
+            <div id="promos" className="pb-8 scroll-mt-20">
+              <div
+                className={`group relative rounded-3xl overflow-hidden transition-[height] duration-300 ${heightClass}`}
+                style={{ boxShadow: "0 20px 40px -20px rgba(0,0,0,0.6)", border: "1px solid #232735" }}
+                onMouseEnter={() => setCarouselPaused(true)}
+                onMouseLeave={() => setCarouselPaused(false)}
+                onTouchStart={handleCarouselTouchStart}
+                onTouchEnd={(e) => handleCarouselTouchEnd(e, promos.length)}
+              >
+                <div
+                  className="flex h-full transition-transform duration-500 ease-out"
+                  style={{ width: `${promos.length * 100}%`, transform: `translateX(-${carouselIndex * (100 / promos.length)}%)` }}
+                >
+                  {promos.map((p, i) => {
+                    const hasMedia = !!(p.image || p.video);
+                    return (
+                      <div key={p.id} className="relative h-full shrink-0" style={{ width: `${100 / promos.length}%`, background: hasMedia ? "#05060a" : "linear-gradient(135deg, #f2b705, #ea580c)" }}>
+                        {hasMedia && (
+                          <>
+                            {/* Blurred backdrop copy — fills the frame with the promo's own colors */}
+                            {p.video ? (
+                              <video src={p.video} muted autoPlay={i === carouselIndex} loop playsInline className="absolute inset-0 w-full h-full" style={{ objectFit: "cover", filter: "blur(20px) brightness(0.65) saturate(1.5)", transform: "scale(1.15)" }} />
+                            ) : (
+                              <img src={p.image} alt="" className="absolute inset-0 w-full h-full" style={{ objectFit: "cover", filter: "blur(20px) brightness(0.65) saturate(1.5)", transform: "scale(1.15)" }} />
+                            )}
+                            {/* Sharp copy, shown in full — never cropped, subtle zoom on hover */}
+                            {p.video ? (
+                              <video
+                                src={p.video}
+                                muted
+                                autoPlay={i === carouselIndex}
+                                loop
+                                playsInline
+                                className="absolute inset-0 w-full h-full transition-transform duration-[4s] ease-out group-hover:scale-105"
+                                style={{ objectFit: "contain" }}
+                                onLoadedMetadata={(e) => handleMediaLoadedSize(p.id, e.target.videoWidth, e.target.videoHeight)}
+                              />
+                            ) : (
+                              <img
+                                src={p.image}
+                                alt=""
+                                className="absolute inset-0 w-full h-full transition-transform duration-[4s] ease-out group-hover:scale-105"
+                                style={{ objectFit: "contain" }}
+                                onLoad={(e) => handleMediaLoadedSize(p.id, e.target.naturalWidth, e.target.naturalHeight)}
+                              />
+                            )}
+                          </>
+                        )}
 
-                {!current.mediaHasText && (
-                  <div className="relative p-4 sm:p-6 flex flex-col justify-end h-full" style={hasMedia ? { background: "linear-gradient(0deg, rgba(10,7,5,0.75), rgba(10,7,5,0) 55%)" } : undefined}>
-                    <span
-                      className="inline-block px-2.5 py-1 rounded-full text-[10px] font-bold mb-2 self-start"
-                      style={{ background: "rgba(0,0,0,0.35)", color: "#F2B705", backdropFilter: "blur(2px)" }}
-                    >
-                      🔥 PROMO
-                    </span>
-                    <div
-                      className="font-display text-2xl sm:text-3xl leading-tight"
-                      style={{ color: hasMedia ? "#FBF3E7" : "#191310" }}
-                    >
-                      {current.title}
-                    </div>
-                    {current.subtitle && (
-                      <div
-                        className="text-xs sm:text-sm mt-1"
-                        style={{ color: hasMedia ? "#D8C9B4" : "#3A2C0A" }}
-                      >
-                        {current.subtitle}
+                        {!p.mediaHasText && (
+                          <div className="relative p-4 sm:p-6 flex flex-col justify-end h-full" style={hasMedia ? { background: "linear-gradient(0deg, rgba(5,6,10,0.8), rgba(5,6,10,0.05) 60%)" } : undefined}>
+                            <span
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-extrabold mb-2 self-start tracking-wide"
+                              style={hasMedia
+                                ? { background: "rgba(242,183,5,0.15)", color: "#f2b705", border: "1px solid rgba(242,183,5,0.4)", backdropFilter: "blur(4px)" }
+                                : { background: "rgba(12,14,22,0.15)", color: "#0c0e16", border: "1px solid rgba(12,14,22,0.35)" }}
+                            >
+                              <Flame size={12} /> PROMO
+                            </span>
+                            <div
+                              className="font-display text-2xl sm:text-3xl leading-tight"
+                              style={{ color: hasMedia ? "#ffffff" : "#0c0e16" }}
+                            >
+                              {p.title}
+                            </div>
+                            {p.subtitle && (
+                              <div
+                                className="text-xs sm:text-sm mt-1"
+                                style={{ color: hasMedia ? "#d1d5db" : "#422006" }}
+                              >
+                                {p.subtitle}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                )}
+                    );
+                  })}
+                </div>
 
-                {catalog.promotions.length > 1 && (
+                {promos.length > 1 && (
                   <>
                     <button
-                      onClick={() => setCarouselIndex((i) => (i - 1 + catalog.promotions.length) % catalog.promotions.length)}
-                      className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center"
-                      style={{ background: "rgba(0,0,0,0.4)" }}
+                      onClick={() => setCarouselIndex((i) => (i - 1 + promos.length) % promos.length)}
+                      aria-label="Promoción anterior"
+                      className="absolute left-3 top-1/2 -translate-y-1/2 z-10 w-9 h-9 rounded-full flex items-center justify-center opacity-70 sm:opacity-0 sm:group-hover:opacity-100 transition-all hover:scale-110"
+                      style={{ background: "rgba(12,14,22,0.55)", backdropFilter: "blur(6px)", border: "1px solid rgba(255,255,255,0.15)" }}
                     >
-                      <ChevronRight size={18} color="#FBF3E7" style={{ transform: "rotate(180deg)" }} />
+                      <ChevronRight size={17} color="#ffffff" style={{ transform: "rotate(180deg)" }} />
                     </button>
                     <button
-                      onClick={() => setCarouselIndex((i) => (i + 1) % catalog.promotions.length)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center"
-                      style={{ background: "rgba(0,0,0,0.4)" }}
+                      onClick={() => setCarouselIndex((i) => (i + 1) % promos.length)}
+                      aria-label="Siguiente promoción"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 z-10 w-9 h-9 rounded-full flex items-center justify-center opacity-70 sm:opacity-0 sm:group-hover:opacity-100 transition-all hover:scale-110"
+                      style={{ background: "rgba(12,14,22,0.55)", backdropFilter: "blur(6px)", border: "1px solid rgba(255,255,255,0.15)" }}
                     >
-                      <ChevronRight size={18} color="#FBF3E7" />
+                      <ChevronRight size={17} color="#ffffff" />
                     </button>
-                    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5">
-                      {catalog.promotions.map((p, i) => (
+                    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5 z-10">
+                      {promos.map((p, i) => (
                         <button
                           key={p.id}
                           onClick={() => setCarouselIndex(i)}
-                          className="rounded-full transition-all"
-                          style={{
-                            width: i === carouselIndex ? 16 : 6,
-                            height: 6,
-                            background: i === carouselIndex ? "#F2B705" : "rgba(255,255,255,0.4)",
-                          }}
-                        />
+                          aria-label={`Ir a la promoción ${i + 1}`}
+                          className="relative h-1.5 rounded-full overflow-hidden transition-all duration-300"
+                          style={{ width: i === carouselIndex ? 28 : 6, background: "rgba(255,255,255,0.25)" }}
+                        >
+                          {i === carouselIndex && (
+                            <span
+                              key={`${p.id}-fill`}
+                              className="absolute inset-0 rounded-full origin-left"
+                              style={{
+                                background: "#f2b705",
+                                animation: "promoProgress 5s linear forwards",
+                                animationPlayState: carouselPaused ? "paused" : "running",
+                              }}
+                            />
+                          )}
+                        </button>
                       ))}
                     </div>
                   </>
@@ -837,96 +1034,117 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
           );
         })()}
 
-        <div className="flex flex-wrap gap-3 mt-4 text-[11px] c-tan2">
-          <span className="flex items-center gap-1"><MapPin size={12} className="c-gold" />{catalog.settings.address}</span>
-          <span className="flex items-center gap-1"><Phone size={12} className="c-gold" />{catalog.settings.phoneDisplay}</span>
-          <span className="flex items-center gap-1"><Clock size={12} className="c-gold" />{catalog.settings.accentNote}</span>
-        </div>
-
-        {/* Search */}
-        <div className="mt-4 relative">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 c-muted" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar en el menú…"
-            className="w-full bg-surface2 rounded-full pl-9 pr-4 py-2.5 text-sm ph-muted outline-none focus-gold c-cream"
-          />
-        </div>
-      </div>
-
-      {/* Category rail */}
-      {!query.trim() && (
-        <div className="sticky top-0 z-20 no-scrollbar overflow-x-auto flex gap-2 px-5 py-3" style={{ background: "#191310", borderBottom: "1px solid #2E241D" }}>
-          {catalog.categories.map((c) => (
+        {/* Category rail */}
+        {!query.trim() && (
+          <div className="sticky top-[57px] z-10 no-scrollbar overflow-x-auto flex gap-2 py-3 mb-4" style={{ background: "#0c0e16", borderBottom: "1px solid #171a24" }}>
             <button
-              key={c.id}
-              ref={(el) => (railRefs.current[c.id] = el)}
-              onClick={() => setActiveCat(c.id)}
-              className="shrink-0 px-3.5 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-colors"
-              style={{
-                background: activeCat === c.id ? "#F2B705" : "#2E241D",
-                color: activeCat === c.id ? "#191310" : "#D8C9B4",
-              }}
+              onClick={() => setActiveCat("__all__")}
+              className="shrink-0 flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-colors"
+              style={{ background: showAll ? "#f2b705" : "#171a24", color: showAll ? "#0c0e16" : "#d1d5db" }}
             >
-              <span className="mr-1">{c.emoji}</span>{c.name}
+              <Utensils size={12} /> Todos
             </button>
-          ))}
-        </div>
-      )}
-
-      {/* Items */}
-      <div className="px-5 pt-4">
-        {query.trim() ? (
-          <>
-            <div className="text-xs c-muted mb-2">{filteredItems.length} resultado(s) para "{query}"</div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 items-start">
-              {filteredItems.map((item) => (
-                <ItemCard key={item.id + item.catName} item={item} onPick={() => setPickItem(item)} />
-              ))}
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-xl">{activeCategory.emoji}</span>
-              <h2 className="font-display text-xl c-gold">{activeCategory.name}</h2>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 items-start">
-              {activeCategory.items.map((item) => (
-                <ItemCard key={item.id} item={{ ...item, catId: activeCategory.id }} onPick={() => setPickItem({ ...item, catId: activeCategory.id })} />
-              ))}
-            </div>
-
-            {activeCategory.id === "sandwiches" && (
-              <InfoStrip title="Personalizá tu pedido" list={["Elegí verduras, aderezos, salsas y guarniciones al agregar cada producto"]} />
-            )}
-          </>
+            {catalog.categories.map((c) => (
+              <button
+                key={c.id}
+                ref={(el) => (railRefs.current[c.id] = el)}
+                onClick={() => setActiveCat(c.id)}
+                className="shrink-0 px-3.5 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-colors"
+                style={{
+                  background: !showAll && activeCat === c.id ? "#f2b705" : "#171a24",
+                  color: !showAll && activeCat === c.id ? "#0c0e16" : "#d1d5db",
+                }}
+              >
+                <span className="mr-1">{c.emoji}</span>{c.name}
+              </button>
+            ))}
+          </div>
         )}
 
-        <button
-          onClick={() => setLookupOpen(true)}
-          className="w-full mt-6 py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5"
-          style={{ background: "#2E241D", color: "#D8C9B4" }}
-        >
-          <Search size={12} /> Ya hice un pedido, quiero ver su estado
-        </button>
+        {/* Items + order sidebar */}
+        <div className="grid lg:grid-cols-[1fr_340px] gap-8 items-start pb-6">
+          <div className="min-w-0">
+            {query.trim() ? (
+              <>
+                <div className="text-xs c-muted mb-3">{filteredItems.length} resultado(s) para "{query}"</div>
+                <div className="space-y-3">
+                  {filteredItems.map((item) => (
+                    <ItemCard key={item.id + item.catName} item={item} onPick={() => setPickItem(item)} />
+                  ))}
+                </div>
+              </>
+            ) : showAll ? (
+              catalog.categories.map((cat) => (
+                <div key={cat.id} className="mb-8">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xl">{cat.emoji}</span>
+                    <h2 className="font-display text-xl c-cream">{cat.name}</h2>
+                    <span className="text-[10px] font-bold px-2 py-1 rounded-full" style={{ background: "#171a24", color: "#9ca3af" }}>{cat.items.length} variedades</span>
+                  </div>
+                  <div className="space-y-3 mt-3">
+                    {cat.items.map((item) => (
+                      <ItemCard key={item.id} item={{ ...item, catId: cat.id }} onPick={() => setPickItem({ ...item, catId: cat.id })} />
+                    ))}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xl">{activeCategory.emoji}</span>
+                  <h2 className="font-display text-xl c-cream">{activeCategory.name}</h2>
+                  <span className="text-[10px] font-bold px-2 py-1 rounded-full" style={{ background: "#171a24", color: "#9ca3af" }}>{activeCategory.items.length} variedades</span>
+                </div>
+                <div className="space-y-3 mt-3">
+                  {activeCategory.items.map((item) => (
+                    <ItemCard key={item.id} item={{ ...item, catId: activeCategory.id }} onPick={() => setPickItem({ ...item, catId: activeCategory.id })} />
+                  ))}
+                </div>
 
-        <button
-          onClick={onGoAdmin}
-          className="w-full mt-2 py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5"
-          style={{ background: "transparent", border: "1px dashed #4A3C2E", color: "#B8A98F" }}
-        >
-          <Lock size={12} /> ¿Sos parte del local? Ingresá al panel administrador
-        </button>
+                {activeCategory.id === "sandwiches" && (
+                  <InfoStrip title="Personalizá tu pedido" list={["Elegí verduras, aderezos, salsas y guarniciones al agregar cada producto"]} />
+                )}
+              </>
+            )}
+
+            <button
+              onClick={() => setLookupOpen(true)}
+              className="w-full mt-6 py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5"
+              style={{ background: "#171a24", color: "#d1d5db" }}
+            >
+              <Search size={12} /> Ya hice un pedido, quiero ver su estado
+            </button>
+
+            <button
+              onClick={onGoAdmin}
+              className="w-full mt-2 py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5"
+              style={{ background: "transparent", border: "1px dashed #232735", color: "#9ca3af" }}
+            >
+              <Lock size={12} /> ¿Sos parte del local? Ingresá al panel administrador
+            </button>
+          </div>
+
+          {/* Desktop persistent order sidebar */}
+          <div className="hidden lg:block sticky top-[120px]">
+            <OrderSidebar
+              cart={cart}
+              total={cartTotal}
+              mode={orderMode}
+              onModeChange={setOrderMode}
+              onChangeQty={changeQty}
+              onRemove={removeLine}
+              onCheckout={() => setCheckoutOpen(true)}
+            />
+          </div>
+        </div>
       </div>
 
-      {/* Floating cart bar */}
+      {/* Floating cart bar — mobile/tablet only, desktop uses the sidebar */}
       {cartCount > 0 && !drawerOpen && (
         <button
           onClick={() => setDrawerOpen(true)}
-          className="fixed bottom-4 left-4 right-4 max-w-md mx-auto rounded-2xl px-5 py-3.5 flex items-center justify-between shadow-2xl z-30"
-          style={{ background: "#F2B705" }}
+          className="lg:hidden fixed bottom-4 left-4 right-4 max-w-md mx-auto rounded-2xl px-5 py-3.5 flex items-center justify-between shadow-2xl z-30"
+          style={{ background: "#f2b705" }}
         >
           <div className="flex items-center gap-2 c-dark font-bold">
             <div className="w-6 h-6 rounded-full bg-dark c-gold text-xs flex items-center justify-center font-mono-t">{cartCount}</div>
@@ -940,14 +1158,14 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
       {myOrder && !trackerOpen && (
         <button
           onClick={() => setTrackerOpen(true)}
-          className="fixed left-4 right-4 max-w-md mx-auto rounded-2xl px-5 py-3 flex items-center justify-between shadow-2xl z-30"
-          style={{ bottom: cartCount > 0 ? "5.75rem" : "1rem", background: "#241C17", border: "1px solid #F2B705" }}
+          className="lg:hidden fixed left-4 right-4 max-w-md mx-auto rounded-2xl px-5 py-3 flex items-center justify-between shadow-2xl z-30"
+          style={{ bottom: cartCount > 0 ? "5.75rem" : "1rem", background: "#11131b", border: "1px solid #f2b705" }}
         >
           <div className="flex items-center gap-2 c-cream font-bold text-sm">
             <Package size={16} className="c-gold" />
             Pedido #{myOrder.shortCode}
           </div>
-          <div className="text-xs font-bold px-2.5 py-1 rounded-full" style={{ background: (ORDER_STATUSES.find((s) => s.id === myOrder.status) || ORDER_STATUSES[0]).color, color: "#191310" }}>
+          <div className="text-xs font-bold px-2.5 py-1 rounded-full" style={{ background: (ORDER_STATUSES.find((s) => s.id === myOrder.status) || ORDER_STATUSES[0]).color, color: "#0c0e16" }}>
             {(ORDER_STATUSES.find((s) => s.id === myOrder.status) || ORDER_STATUSES[0]).label}
           </div>
         </button>
@@ -958,7 +1176,7 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
         <ItemModal item={pickItem} catalog={catalog} onClose={() => setPickItem(null)} onAdd={addLine} />
       )}
 
-      {/* Cart drawer */}
+      {/* Cart drawer — mobile/tablet only */}
       {drawerOpen && (
         <CartDrawer
           cart={cart}
@@ -974,6 +1192,7 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
       {checkoutOpen && (
         <CheckoutModal
           total={cartTotal}
+          initialMode={orderMode}
           onClose={() => setCheckoutOpen(false)}
           onSubmit={handleOrderSubmit}
         />
@@ -1000,9 +1219,85 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
   );
 }
 
+function OrderSidebar({ cart, total, mode, onModeChange, onChangeQty, onRemove, onCheckout }) {
+  const count = cart.reduce((s, l) => s + l.qty, 0);
+  return (
+    <div className="rounded-2xl overflow-hidden" style={{ background: "#11131b", border: "1px solid #171a24" }}>
+      <div className="p-4 pb-3 flex items-center justify-between" style={{ borderBottom: "1px solid #171a24" }}>
+        <div>
+          <div className="font-display text-base c-cream flex items-center gap-1.5"><ShoppingBag size={15} className="c-gold" /> Tu pedido</div>
+          <div className="text-[11px] c-tan mt-0.5">{count} item{count === 1 ? "" : "s"} agregado{count === 1 ? "" : "s"}</div>
+        </div>
+        {cart.length > 0 && (
+          <button onClick={() => cart.forEach((l) => onRemove(l.lineId))} className="text-[11px] font-bold c-tan hover:c-gold">Vaciar</button>
+        )}
+      </div>
+
+      <div className="p-3 flex gap-2">
+        <button
+          onClick={() => onModeChange("delivery")}
+          className="flex-1 py-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1"
+          style={{ background: mode === "delivery" ? "#f2b705" : "#171a24", color: mode === "delivery" ? "#0c0e16" : "#d1d5db" }}
+        >
+          Delivery
+        </button>
+        <button
+          onClick={() => onModeChange("pickup")}
+          className="flex-1 py-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1"
+          style={{ background: mode === "pickup" ? "#f2b705" : "#171a24", color: mode === "pickup" ? "#0c0e16" : "#d1d5db" }}
+        >
+          Retiro en Local
+        </button>
+      </div>
+
+      {cart.length === 0 ? (
+        <div className="px-4 pb-5 text-xs c-muted">Todavía no agregaste nada.</div>
+      ) : (
+        <div className="px-4 max-h-[320px] overflow-y-auto space-y-3 pb-3">
+          {cart.map((l) => (
+            <div key={l.lineId} className="pb-3" style={{ borderBottom: "1px solid #171a24" }}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="font-bold c-cream text-[13px] truncate">{l.name}{l.variantLabel ? ` (${l.variantLabel})` : ""}</div>
+                  {l.note && <div className="text-[10px] c-muted truncate">{l.note}</div>}
+                  <div className="font-mono-t c-gold text-[12px] mt-0.5">{money(l.price * l.qty)}</div>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button onClick={() => onChangeQty(l.lineId, -1)} className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: "#171a24" }}>
+                    <Minus size={11} className="c-tan2" />
+                  </button>
+                  <span className="w-4 text-center text-xs font-bold c-cream">{l.qty}</span>
+                  <button onClick={() => onChangeQty(l.lineId, 1)} className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: "#171a24" }}>
+                    <Plus size={11} className="c-tan2" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="p-4 pt-3" style={{ borderTop: "1px solid #171a24" }}>
+        <div className="flex justify-between items-center mb-3">
+          <span className="text-xs c-tan">Total</span>
+          <span className="font-mono-t text-lg font-bold c-gold">{money(total)}</span>
+        </div>
+        <button
+          disabled={cart.length === 0}
+          onClick={onCheckout}
+          className="w-full py-3 rounded-xl font-display text-sm disabled:opacity-40"
+          style={{ background: "#f2b705", color: "#0c0e16" }}
+        >
+          Continuar pedido
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function InfoStrip({ title, list }) {
   return (
-    <div className="mt-5 mb-2 p-3.5 rounded-xl" style={{ background: "#2E241D", border: "1px dashed #4A3C2E" }}>
+    <div className="mt-5 mb-2 p-3.5 rounded-xl" style={{ background: "#171a24", border: "1px dashed #232735" }}>
       <div className="text-[11px] font-bold c-gold mb-1">{title}</div>
       <div className="text-[11px] c-tan leading-relaxed">{list.join(" · ")}</div>
     </div>
@@ -1018,63 +1313,41 @@ function ItemCard({ item, onPick }) {
   if (!isActive) {
     return (
       <div
-        className="w-full h-full text-left rounded-2xl overflow-hidden flex flex-col"
-        style={{ background: "#1D1712", border: "1px solid #2E241D", opacity: 0.55 }}
+        className="w-full text-left rounded-2xl overflow-hidden flex gap-3 p-3"
+        style={{ background: "#0c0e16", border: "1px solid #171a24", opacity: 0.55 }}
       >
-        {photo && <img src={photo} alt="" className="w-full aspect-[4/3] object-cover grayscale" />}
-        <div className="p-3.5">
+        {photo && <img src={photo} alt="" className="w-24 h-24 sm:w-28 sm:h-28 rounded-xl object-cover grayscale shrink-0" />}
+        <div className="min-w-0 flex-1 py-1">
           <div className="font-bold c-tan text-[15px] line-through">{item.name}</div>
-          {item.desc && <div className="text-[12px] c-muted mt-0.5 leading-snug">{item.desc}</div>}
-          <div className="text-[11px] font-bold mt-2" style={{ color: "#D62828" }}>No disponible hoy</div>
+          {item.desc && <div className="text-[12px] c-muted mt-0.5 leading-snug line-clamp-2">{item.desc}</div>}
+          <div className="text-[11px] font-bold mt-2" style={{ color: "#dc2626" }}>No disponible hoy</div>
         </div>
       </div>
     );
   }
 
-  // Items with a real photo get a taller "showcase" card (photo on top) —
-  // looks great in the multi-column desktop grid. Items without one (most
-  // of the menu, for now) keep the compact row layout instead of showing a
-  // big empty placeholder tile.
-  if (photo) {
-    return (
-      <button
-        onClick={onPick}
-        className="w-full h-full text-left rounded-2xl overflow-hidden flex flex-col transition-transform active:scale-[0.98] hover:brightness-110"
-        style={{ background: "#241C17", border: "1px solid #2E241D" }}
-      >
-        <img src={photo} alt={item.name} className="w-full aspect-[4/3] object-cover" />
-        <div className="p-3.5 flex flex-col flex-1">
-          <div className="font-bold c-cream text-[15px] leading-snug">{item.name}</div>
-          {item.desc && <div className="text-[12px] c-tan mt-1 leading-snug">{item.desc}</div>}
-          <div className="mt-auto pt-2.5 flex items-center justify-between">
-            <span className="font-mono-t c-gold font-bold text-sm">
-              {hasVariants ? `desde ${money(displayPrice)}` : money(displayPrice)}
-            </span>
-            <span className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#F2B705" }}>
-              <Plus size={16} color="#191310" strokeWidth={2.5} />
-            </span>
-          </div>
-        </div>
-      </button>
-    );
-  }
-
+  // Horizontal list card: image on the left, details + price on the right,
+  // matching the desktop menu layout. Items without a photo skip the image
+  // slot instead of showing an empty tile.
   return (
     <button
       onClick={onPick}
-      className="w-full text-left p-4 rounded-2xl flex items-start gap-3 transition-transform active:scale-[0.98]"
-      style={{ background: "#241C17", border: "1px solid #2E241D" }}
+      className="w-full text-left rounded-2xl overflow-hidden flex gap-3 sm:gap-4 p-3 transition-transform active:scale-[0.98] hover:brightness-110"
+      style={{ background: "#11131b", border: "1px solid #171a24" }}
     >
-      <div className="flex-1 min-w-0 flex items-start justify-between gap-3">
-        <div className="flex-1 min-w-0">
-          <div className="font-bold c-cream text-[15px]">{item.name}</div>
-          {item.desc && <div className="text-[12px] c-tan mt-0.5 leading-snug">{item.desc}</div>}
-          <div className="font-mono-t c-gold font-bold mt-2 text-sm">
+      {photo && <img src={photo} alt={item.name} className="w-24 h-24 sm:w-32 sm:h-32 rounded-xl object-cover shrink-0" />}
+      <div className="min-w-0 flex-1 flex flex-col py-0.5">
+        <div className="flex items-start justify-between gap-2">
+          <div className="font-bold c-cream text-[15px] leading-snug min-w-0 break-words">{item.name}</div>
+          <span className="font-mono-t c-gold font-bold text-sm shrink-0">
             {hasVariants ? `desde ${money(displayPrice)}` : money(displayPrice)}
-          </div>
+          </span>
         </div>
-        <div className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center" style={{ background: "#F2B705" }}>
-          <Plus size={18} color="#191310" strokeWidth={2.5} />
+        {item.desc && <div className="text-[12px] c-tan mt-1 leading-snug line-clamp-2">{item.desc}</div>}
+        <div className="mt-auto pt-2 flex items-center justify-end">
+          <span className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-bold" style={{ background: "#f2b705", color: "#0c0e16" }}>
+            <Plus size={13} strokeWidth={2.5} /> Agregar
+          </span>
         </div>
       </div>
     </button>
@@ -1114,6 +1387,7 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
   const [half1Selected, setHalf1Selected] = useState({});
   const [half2Selected, setHalf2Selected] = useState({});
   const [platoGuarnicion, setPlatoGuarnicion] = useState(null);
+  const [proteinChoice, setProteinChoice] = useState(null);
   const [extraNote, setExtraNote] = useState("");
   const price = variant ? variant.price : item.price;
 
@@ -1146,18 +1420,20 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
   const note = splitMode
     ? [
         "Dividido en 2 mitades",
+        proteinChoice ? `Tipo: ${proteinChoice}` : "",
         `Mitad 1${groupsNote(half1Selected) ? " — " + groupsNote(half1Selected) : ""}`,
         `Mitad 2${groupsNote(half2Selected) ? " — " + groupsNote(half2Selected) : ""}`,
         platoGuarnicion ? `Guarnición: ${platoGuarnicion}` : "",
         extraNote.trim(),
       ].filter(Boolean).join(" · ")
     : [
+        proteinChoice ? `Tipo: ${proteinChoice}` : "",
         groupsNote(selectedByGroup),
         platoGuarnicion ? `Guarnición: ${platoGuarnicion}` : "",
         extraNote.trim(),
       ].filter(Boolean).join(" · ");
 
-  const canAdd = !item.requiresGuarnicion || !!platoGuarnicion;
+  const canAdd = (!item.requiresGuarnicion || !!platoGuarnicion) && (!item.proteinChoices || !!proteinChoice);
   const photo = item.image || PRODUCT_IMAGES[item.id];
 
   return (
@@ -1165,7 +1441,7 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
       <div
         onClick={(e) => e.stopPropagation()}
         className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl overflow-hidden max-h-[85vh] flex flex-col"
-        style={{ background: "#241C17" }}
+        style={{ background: "#11131b" }}
       >
         {photo && (
           <img src={photo} alt={item.name} className="w-full h-44 object-cover shrink-0" />
@@ -1173,7 +1449,7 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
         <div className="p-5 overflow-y-auto">
         <div className="flex justify-between items-start mb-1">
           <h3 className="font-display text-xl c-cream pr-4">{item.name}</h3>
-          <button onClick={onClose} className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#2E241D" }}>
+          <button onClick={onClose} className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#171a24" }}>
             <X size={16} className="c-tan" />
           </button>
         </div>
@@ -1189,11 +1465,28 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
                   onClick={() => setVariant(v)}
                   className="px-3.5 py-2 rounded-xl text-xs font-bold"
                   style={{
-                    background: variant.label === v.label ? "#F2B705" : "#2E241D",
-                    color: variant.label === v.label ? "#191310" : "#D8C9B4",
+                    background: variant.label === v.label ? "#f2b705" : "#171a24",
+                    color: variant.label === v.label ? "#0c0e16" : "#d1d5db",
                   }}
                 >
                   {v.label} · {money(v.price)}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {item.proteinChoices && (
+          <div className="mb-4">
+            <div className="text-xs font-bold c-gold mb-2">Elegí el tipo (obligatorio)</div>
+            <div className="flex gap-1.5 flex-wrap">
+              {item.proteinChoices.map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setProteinChoice(p)}
+                  className={`chip px-3 py-1.5 rounded-full text-[11px] font-bold ${proteinChoice === p ? "active" : ""}`}
+                >
+                  {p}
                 </button>
               ))}
             </div>
@@ -1204,13 +1497,13 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
           <div className="mb-4">
             <div className="text-xs font-bold c-gold mb-2">Elegí tu guarnición (obligatorio)</div>
             <div className="flex gap-1.5 flex-wrap">
-              {catalog.platoGuarniciones.map((g) => (
+              {catalog.platoGuarniciones.filter((g) => g.active !== false).map((g) => (
                 <button
-                  key={g}
-                  onClick={() => setPlatoGuarnicion(g)}
-                  className={`chip px-3 py-1.5 rounded-full text-[11px] font-bold ${platoGuarnicion === g ? "active" : ""}`}
+                  key={g.label}
+                  onClick={() => setPlatoGuarnicion(g.label)}
+                  className={`chip px-3 py-1.5 rounded-full text-[11px] font-bold ${platoGuarnicion === g.label ? "active" : ""}`}
                 >
-                  {g}
+                  {g.label}
                 </button>
               ))}
             </div>
@@ -1223,14 +1516,14 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
               <button
                 onClick={() => setSplitMode(false)}
                 className="flex-1 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5"
-                style={{ background: !splitMode ? "#F2B705" : "#2E241D", color: !splitMode ? "#191310" : "#D8C9B4" }}
+                style={{ background: !splitMode ? "#f2b705" : "#171a24", color: !splitMode ? "#0c0e16" : "#d1d5db" }}
               >
                 📖 Entero igual
               </button>
               <button
                 onClick={() => setSplitMode(true)}
                 className="flex-1 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5"
-                style={{ background: splitMode ? "#F2B705" : "#2E241D", color: splitMode ? "#191310" : "#D8C9B4" }}
+                style={{ background: splitMode ? "#f2b705" : "#171a24", color: splitMode ? "#0c0e16" : "#d1d5db" }}
               >
                 ✂️ Dividir en 2
               </button>
@@ -1279,13 +1572,16 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
         </div>
 
         {item.requiresGuarnicion && !platoGuarnicion && (
-          <p className="text-[11px] mb-2 text-center" style={{ color: "#D62828" }}>Elegí una guarnición para poder agregar este plato.</p>
+          <p className="text-[11px] mb-2 text-center" style={{ color: "#dc2626" }}>Elegí una guarnición para poder agregar este plato.</p>
+        )}
+        {item.proteinChoices && !proteinChoice && (
+          <p className="text-[11px] mb-2 text-center" style={{ color: "#dc2626" }}>Elegí el tipo (carne, pollo o cerdo) para poder agregar.</p>
         )}
         <button
           onClick={() => canAdd && onAdd(item, variant, qty, note)}
           disabled={!canAdd}
           className="w-full py-3.5 rounded-2xl font-display text-base flex items-center justify-center gap-2 disabled:opacity-40"
-          style={{ background: "#F2B705", color: "#191310" }}
+          style={{ background: "#f2b705", color: "#0c0e16" }}
         >
           Agregar · {money(price * qty)}
         </button>
@@ -1301,11 +1597,11 @@ function CartDrawer({ cart, total, onClose, onChangeQty, onRemove, onCheckout })
       <div
         onClick={(e) => e.stopPropagation()}
         className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[85vh] flex flex-col"
-        style={{ background: "#FBF3E7", color: "#191310" }}
+        style={{ background: "#ffffff", color: "#0c0e16" }}
       >
         <div className="p-5 pb-3 flex items-center justify-between">
           <h3 className="font-display text-xl flex items-center gap-2"><ShoppingBag size={18} /> Tu pedido</h3>
-          <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#EDE1CC" }}>
+          <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#f3f4f6" }}>
             <X size={16} />
           </button>
         </div>
@@ -1315,16 +1611,16 @@ function CartDrawer({ cart, total, onClose, onChangeQty, onRemove, onCheckout })
         ) : (
           <div className="flex-1 overflow-y-auto px-5 font-mono-t text-sm">
             {cart.map((l) => (
-              <div key={l.lineId} className="py-3 flex items-start justify-between gap-2" style={{ borderBottom: "1px dashed #D8C9B4" }}>
+              <div key={l.lineId} className="py-3 flex items-start justify-between gap-2" style={{ borderBottom: "1px dashed #d1d5db" }}>
                 <div className="flex-1 min-w-0">
                   <div className="font-bold">{l.name}{l.variantLabel ? ` (${l.variantLabel})` : ""}</div>
                   {l.note && <div className="text-[11px] c-muted2">{l.note}</div>}
                   <div className="flex items-center gap-2 mt-1.5">
-                    <button onClick={() => onChangeQty(l.lineId, -1)} className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: "#EDE1CC" }}>
+                    <button onClick={() => onChangeQty(l.lineId, -1)} className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: "#f3f4f6" }}>
                       <Minus size={12} />
                     </button>
                     <span className="w-4 text-center font-bold">{l.qty}</span>
-                    <button onClick={() => onChangeQty(l.lineId, 1)} className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: "#EDE1CC" }}>
+                    <button onClick={() => onChangeQty(l.lineId, 1)} className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: "#f3f4f6" }}>
                       <Plus size={12} />
                     </button>
                     <button onClick={() => onRemove(l.lineId)} className="ml-2 c-red2">
@@ -1338,7 +1634,7 @@ function CartDrawer({ cart, total, onClose, onChangeQty, onRemove, onCheckout })
           </div>
         )}
 
-        <div className="p-5 pt-3 ticket-edge" style={{ borderTop: "2px dashed #D8C9B4" }}>
+        <div className="p-5 pt-3 ticket-edge" style={{ borderTop: "2px dashed #d1d5db" }}>
           <div className="flex justify-between items-center mb-4 font-mono-t">
             <span className="text-sm c-muted2">Total</span>
             <span className="text-xl font-bold">{money(total)}</span>
@@ -1347,7 +1643,7 @@ function CartDrawer({ cart, total, onClose, onChangeQty, onRemove, onCheckout })
             disabled={cart.length === 0}
             onClick={onCheckout}
             className="w-full py-3.5 rounded-2xl font-display text-base disabled:opacity-40"
-            style={{ background: "#191310", color: "#F2B705" }}
+            style={{ background: "#0c0e16", color: "#f2b705" }}
           >
             Continuar pedido
           </button>
@@ -1357,9 +1653,13 @@ function CartDrawer({ cart, total, onClose, onChangeQty, onRemove, onCheckout })
   );
 }
 
-function CheckoutModal({ total, onClose, onSubmit }) {
-  const [mode, setMode] = useState("pickup");
+function CheckoutModal({ total, initialMode, onClose, onSubmit }) {
+  const [mode, setMode] = useState(initialMode || "pickup");
   const [payment, setPayment] = useState("efectivo");
+
+  useEffect(() => {
+    if (mode === "delivery" && payment === "tarjeta") setPayment("efectivo");
+  }, [mode, payment]);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
@@ -1393,10 +1693,10 @@ function CheckoutModal({ total, onClose, onSubmit }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: "rgba(10,7,5,0.8)" }} onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 max-h-[90vh] overflow-y-auto" style={{ background: "#241C17" }}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 max-h-[90vh] overflow-y-auto" style={{ background: "#11131b" }}>
         <div className="flex justify-between items-center mb-4">
           <h3 className="font-display text-xl c-cream">Confirmar pedido</h3>
-          <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#2E241D" }}>
+          <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#171a24" }}>
             <X size={16} className="c-tan" />
           </button>
         </div>
@@ -1405,14 +1705,14 @@ function CheckoutModal({ total, onClose, onSubmit }) {
           <button
             onClick={() => setMode("pickup")}
             className="flex-1 py-2.5 rounded-xl text-sm font-bold"
-            style={{ background: mode === "pickup" ? "#F2B705" : "#2E241D", color: mode === "pickup" ? "#191310" : "#D8C9B4" }}
+            style={{ background: mode === "pickup" ? "#f2b705" : "#171a24", color: mode === "pickup" ? "#0c0e16" : "#d1d5db" }}
           >
             Retiro en local
           </button>
           <button
             onClick={() => setMode("delivery")}
             className="flex-1 py-2.5 rounded-xl text-sm font-bold"
-            style={{ background: mode === "delivery" ? "#F2B705" : "#2E241D", color: mode === "delivery" ? "#191310" : "#D8C9B4" }}
+            style={{ background: mode === "delivery" ? "#f2b705" : "#171a24", color: mode === "delivery" ? "#0c0e16" : "#d1d5db" }}
           >
             Delivery
           </button>
@@ -1428,15 +1728,15 @@ function CheckoutModal({ total, onClose, onSubmit }) {
                 type="button"
                 onClick={useMyLocation}
                 className="text-xs font-bold flex items-center gap-1.5 mb-2"
-                style={{ color: gpsStatus === "ok" ? "#22C55E" : "#F2B705" }}
+                style={{ color: gpsStatus === "ok" ? "#22c55e" : "#f2b705" }}
               >
                 <MapPin size={13} />
                 {gpsStatus === "loading" ? "Buscando tu ubicación…" : gpsStatus === "ok" ? "Ubicación agregada — tocá para actualizar" : "Usar mi ubicación actual (GPS)"}
               </button>
               {gpsStatus === "error" && (
-                <p className="text-[11px] mb-2" style={{ color: "#EF6461" }}>No pudimos acceder a tu ubicación — no pasa nada, completá la dirección a mano.</p>
+                <p className="text-[11px] mb-2" style={{ color: "#f87171" }}>No pudimos acceder a tu ubicación — no pasa nada, completá la dirección a mano.</p>
               )}
-              <div className="p-3 rounded-xl text-xs flex items-start gap-2" style={{ background: "#2E241D", color: "#D8C9B4" }}>
+              <div className="p-3 rounded-xl text-xs flex items-start gap-2" style={{ background: "#171a24", color: "#d1d5db" }}>
                 <span className="shrink-0">📍</span>
                 <span>
                   {gpsStatus === "ok"
@@ -1453,18 +1753,21 @@ function CheckoutModal({ total, onClose, onSubmit }) {
               {[
                 { id: "efectivo", label: "💵 Efectivo" },
                 { id: "transferencia", label: "🏦 Transferencia" },
-                { id: "tarjeta", label: "💳 Tarjeta" },
+                ...(mode === "pickup" ? [{ id: "tarjeta", label: "💳 Tarjeta" }] : []),
               ].map((p) => (
                 <button
                   key={p.id}
                   onClick={() => setPayment(p.id)}
                   className="flex-1 py-2.5 rounded-xl text-xs font-bold"
-                  style={{ background: payment === p.id ? "#F2B705" : "#2E241D", color: payment === p.id ? "#191310" : "#D8C9B4" }}
+                  style={{ background: payment === p.id ? "#f2b705" : "#171a24", color: payment === p.id ? "#0c0e16" : "#d1d5db" }}
                 >
                   {p.label}
                 </button>
               ))}
             </div>
+            {mode === "delivery" && (
+              <p className="text-[11px] c-muted mt-1.5">Para delivery no aceptamos tarjeta — solo efectivo o transferencia.</p>
+            )}
           </div>
 
           <Field label="Nota para el pedido (opcional)" value={note} onChange={setNote} placeholder="Aclaraciones generales" />
@@ -1479,7 +1782,7 @@ function CheckoutModal({ total, onClose, onSubmit }) {
           disabled={!canSubmit || sending}
           onClick={submit}
           className="w-full py-3.5 rounded-2xl font-display text-base flex items-center justify-center gap-2 disabled:opacity-40"
-          style={{ background: "#F2B705", color: "#191310" }}
+          style={{ background: "#f2b705", color: "#0c0e16" }}
         >
           <Send size={16} /> {sending ? "Enviando…" : "Enviar pedido por WhatsApp"}
         </button>
@@ -1506,13 +1809,13 @@ function Field({ label, value, onChange, placeholder }) {
 function ConfirmModal({ order, onClose, onTrack }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-5" style={{ background: "rgba(10,7,5,0.85)" }} onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-3xl p-6 text-center" style={{ background: "#FBF3E7", color: "#191310" }}>
-        <div className="w-14 h-14 rounded-full mx-auto flex items-center justify-center mb-4" style={{ background: "#22C55E" }}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-3xl p-6 text-center" style={{ background: "#ffffff", color: "#0c0e16" }}>
+        <div className="w-14 h-14 rounded-full mx-auto flex items-center justify-center mb-4" style={{ background: "#22c55e" }}>
           <Check size={26} color="white" strokeWidth={3} />
         </div>
         <h3 className="font-display text-xl mb-1">¡Pedido enviado!</h3>
         <p className="text-sm c-muted2 mb-4">Pedido <span className="font-mono-t font-bold">#{order.shortCode}</span> confirmalo por WhatsApp para que el local lo empiece a preparar.</p>
-        <button onClick={onTrack} className="w-full py-3 rounded-2xl font-display mb-2" style={{ background: "#191310", color: "#F2B705" }}>
+        <button onClick={onTrack} className="w-full py-3 rounded-2xl font-display mb-2" style={{ background: "#0c0e16", color: "#f2b705" }}>
           Seguir el estado de mi pedido
         </button>
         <button onClick={onClose} className="w-full py-2.5 text-sm c-muted2">
@@ -1527,10 +1830,10 @@ function OrderTrackerModal({ order, onClose, onStopTracking }) {
   const currentIdx = ORDER_STATUSES.findIndex((s) => s.id === order.status);
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: "rgba(10,7,5,0.8)" }} onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-6" style={{ background: "#FBF3E7", color: "#191310" }}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-6" style={{ background: "#ffffff", color: "#0c0e16" }}>
         <div className="flex justify-between items-center mb-1">
           <h3 className="font-display text-xl">Pedido #{order.shortCode}</h3>
-          <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#EDE1CC" }}>
+          <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#f3f4f6" }}>
             <X size={16} />
           </button>
         </div>
@@ -1544,21 +1847,21 @@ function OrderTrackerModal({ order, onClose, onStopTracking }) {
                 <div className="flex flex-col items-center">
                   <div
                     className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 font-mono-t text-xs font-bold"
-                    style={{ background: done ? s.color : "#EDE1CC", color: done ? "#191310" : "#B8A98F" }}
+                    style={{ background: done ? s.color : "#f3f4f6", color: done ? "#0c0e16" : "#9ca3af" }}
                   >
                     {done ? <Check size={13} strokeWidth={3} /> : idx + 1}
                   </div>
                   {idx < ORDER_STATUSES.length - 1 && (
-                    <div style={{ width: 2, height: 22, background: idx < currentIdx ? s.color : "#EDE1CC" }} />
+                    <div style={{ width: 2, height: 22, background: idx < currentIdx ? s.color : "#f3f4f6" }} />
                   )}
                 </div>
-                <span className="font-bold text-sm pb-5" style={{ color: done ? "#191310" : "#B8A98F" }}>{s.label}</span>
+                <span className="font-bold text-sm pb-5" style={{ color: done ? "#0c0e16" : "#9ca3af" }}>{s.label}</span>
               </div>
             );
           })}
         </div>
 
-        <div className="p-3.5 rounded-xl font-mono-t text-xs mb-4" style={{ background: "#EDE1CC" }}>
+        <div className="p-3.5 rounded-xl font-mono-t text-xs mb-4" style={{ background: "#f3f4f6" }}>
           <div className="flex justify-between font-bold mb-1"><span>Total</span><span>{money(order.total)}</span></div>
           <div className="c-muted2">{order.mode === "delivery" ? "Delivery" : "Retiro en el local"}</div>
         </div>
@@ -1598,7 +1901,7 @@ function OrderLookupModal({ onClose, onFound }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: "rgba(10,7,5,0.8)" }} onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-6" style={{ background: "#241C17" }}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-6" style={{ background: "#11131b" }}>
         <div className="flex justify-between items-center mb-1">
           <h3 className="font-display text-xl c-cream">Buscar mi pedido</h3>
           <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center bg-surface2">
@@ -1611,13 +1914,13 @@ function OrderLookupModal({ onClose, onFound }) {
           <Field label="Número de pedido" value={code} onChange={setCode} placeholder="Ej: 7" />
           <Field label="Teléfono usado en el pedido" value={phone} onChange={setPhone} placeholder="Ej: 387 555 5555" />
         </div>
-        {error && <p className="text-xs mb-3" style={{ color: "#EF6461" }}>{error}</p>}
+        {error && <p className="text-xs mb-3" style={{ color: "#f87171" }}>{error}</p>}
 
         <button
           onClick={search}
           disabled={searching}
           className="w-full py-3.5 rounded-2xl font-display text-base flex items-center justify-center gap-2 disabled:opacity-50 mt-2"
-          style={{ background: "#F2B705", color: "#191310" }}
+          style={{ background: "#f2b705", color: "#0c0e16" }}
         >
           <Search size={16} /> {searching ? "Buscando…" : "Buscar pedido"}
         </button>
@@ -1787,7 +2090,7 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
             onClick={submitLogin}
             disabled={signingIn}
             className="w-full py-3 rounded-xl font-display disabled:opacity-50"
-            style={{ background: "#F2B705", color: "#191310" }}
+            style={{ background: "#f2b705", color: "#0c0e16" }}
           >
             {signingIn ? "Ingresando…" : "Ingresar"}
           </button>
@@ -1807,20 +2110,20 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
       {toast && (
         <div
           className="fixed top-4 left-4 right-4 max-w-md mx-auto z-50 rounded-2xl px-4 py-3.5 flex items-center gap-3 shadow-2xl cursor-pointer"
-          style={{ background: "#22C55E" }}
+          style={{ background: "#22c55e" }}
           onClick={() => { setToast(null); openTab("orders"); }}
         >
           <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0" style={{ background: "rgba(0,0,0,0.15)" }}>
             <Package size={17} color="white" />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="font-bold text-sm" style={{ color: "#0B2E13" }}>¡Nuevo pedido de {toast.customerName}!</div>
-            <div className="text-xs" style={{ color: "#0B2E13" }}>{money(toast.total)} · Pedido #{toast.shortCode}</div>
+            <div className="font-bold text-sm" style={{ color: "#052e12" }}>¡Nuevo pedido de {toast.customerName}!</div>
+            <div className="text-xs" style={{ color: "#052e12" }}>{money(toast.total)} · Pedido #{toast.shortCode}</div>
           </div>
         </div>
       )}
 
-      <div className="px-5 pt-6 pb-4 flex items-center justify-between" style={{ borderBottom: "1px solid #2E241D" }}>
+      <div className="px-5 pt-6 pb-4 flex items-center justify-between" style={{ borderBottom: "1px solid #171a24" }}>
         <div className="flex items-center gap-2">
           <Utensils size={18} className="c-gold" />
           <span className="font-display text-lg">ADMIN · YO PANCHO</span>
@@ -1841,13 +2144,13 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
             key={t.id}
             onClick={() => openTab(t.id)}
             className="relative flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold"
-            style={{ background: tab === t.id ? "#F2B705" : "#2E241D", color: tab === t.id ? "#191310" : "#D8C9B4" }}
+            style={{ background: tab === t.id ? "#f2b705" : "#171a24", color: tab === t.id ? "#0c0e16" : "#d1d5db" }}
           >
             <t.icon size={13} /> {t.label}
             {t.id === "orders" && unseenCount > 0 && (
               <span
                 className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center"
-                style={{ background: "#D62828", color: "white" }}
+                style={{ background: "#dc2626", color: "white" }}
               >
                 {unseenCount}
               </span>
@@ -1874,12 +2177,12 @@ function OrdersPanel({ orders, onUpdateOrder, onRefresh }) {
     <div>
       <div className="flex items-center justify-between mb-3">
         <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
-          <button onClick={() => setFilter("todos")} className="shrink-0 px-3 py-1.5 rounded-full text-[11px] font-bold" style={{ background: filter === "todos" ? "#F2B705" : "#2E241D", color: filter === "todos" ? "#191310" : "#D8C9B4" }}>Todos</button>
+          <button onClick={() => setFilter("todos")} className="shrink-0 px-3 py-1.5 rounded-full text-[11px] font-bold" style={{ background: filter === "todos" ? "#f2b705" : "#171a24", color: filter === "todos" ? "#0c0e16" : "#d1d5db" }}>Todos</button>
           {ORDER_STATUSES.map((s) => (
-            <button key={s.id} onClick={() => setFilter(s.id)} className="shrink-0 px-3 py-1.5 rounded-full text-[11px] font-bold" style={{ background: filter === s.id ? s.color : "#2E241D", color: filter === s.id ? "#191310" : "#D8C9B4" }}>{s.label}</button>
+            <button key={s.id} onClick={() => setFilter(s.id)} className="shrink-0 px-3 py-1.5 rounded-full text-[11px] font-bold" style={{ background: filter === s.id ? s.color : "#171a24", color: filter === s.id ? "#0c0e16" : "#d1d5db" }}>{s.label}</button>
           ))}
         </div>
-        <button onClick={onRefresh} className="shrink-0 ml-2 w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#2E241D" }}>
+        <button onClick={onRefresh} className="shrink-0 ml-2 w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#171a24" }}>
           <RefreshCw size={13} className="c-tan" />
         </button>
       </div>
@@ -1903,12 +2206,12 @@ function OrderCard({ order, onUpdateOrder }) {
   const time = new Date(order.createdAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
 
   return (
-    <div className="rounded-2xl overflow-hidden" style={{ background: "#241C17", border: "1px solid #2E241D" }}>
+    <div className="rounded-2xl overflow-hidden" style={{ background: "#11131b", border: "1px solid #171a24" }}>
       <button onClick={() => setOpen((v) => !v)} className="w-full p-4 flex items-center justify-between text-left">
         <div>
           <div className="flex items-center gap-2">
             <span className="font-mono-t font-bold text-sm">#{order.shortCode}</span>
-            <span className="text-[10px] px-2 py-0.5 rounded-full font-bold" style={{ background: status.color, color: "#191310" }}>{status.label}</span>
+            <span className="text-[10px] px-2 py-0.5 rounded-full font-bold" style={{ background: status.color, color: "#0c0e16" }}>{status.label}</span>
           </div>
           <div className="text-xs c-tan mt-1">{order.customerName} · {time} · {order.mode === "delivery" ? "Delivery" : "Retiro"}</div>
         </div>
@@ -1920,7 +2223,7 @@ function OrderCard({ order, onUpdateOrder }) {
 
       {open && (
         <div className="px-4 pb-4 font-mono-t text-xs">
-          <div style={{ borderTop: "1px dashed #3A2F26" }} className="pt-3 space-y-1.5 mb-3">
+          <div style={{ borderTop: "1px dashed #232735" }} className="pt-3 space-y-1.5 mb-3">
             {order.items.map((l, i) => (
               <div key={i} className="flex justify-between">
                 <span>{l.qty}x {l.name}{l.variantLabel ? ` (${l.variantLabel})` : ""}{l.note ? ` — ${l.note}` : ""}</span>
@@ -1945,7 +2248,7 @@ function OrderCard({ order, onUpdateOrder }) {
                 key={s.id}
                 onClick={() => onUpdateOrder(order.id, { status: s.id })}
                 className="px-2.5 py-1.5 rounded-lg font-bold"
-                style={{ background: order.status === s.id ? s.color : "#2E241D", color: order.status === s.id ? "#191310" : "#D8C9B4" }}
+                style={{ background: order.status === s.id ? s.color : "#171a24", color: order.status === s.id ? "#0c0e16" : "#d1d5db" }}
               >
                 {s.label}
               </button>
@@ -1957,11 +2260,65 @@ function OrderCard({ order, onUpdateOrder }) {
   );
 }
 
+function AdminPromptModal({ dialog, onClose }) {
+  const [values, setValues] = useState(() => {
+    const init = {};
+    (dialog.fields || []).forEach((f) => { init[f.key] = f.defaultValue || ""; });
+    return init;
+  });
+
+  function confirm() {
+    if (dialog.fields) {
+      for (const f of dialog.fields) {
+        if (!f.optional && !String(values[f.key] || "").trim()) return;
+      }
+    }
+    dialog.onConfirm(values);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-5" style={{ background: "rgba(10,7,5,0.8)" }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-3xl p-5" style={{ background: "#11131b", border: "1px solid #171a24" }}>
+        <h3 className="font-display text-lg c-cream mb-1">{dialog.title}</h3>
+        {dialog.message && <p className="text-xs c-tan mb-4">{dialog.message}</p>}
+        {dialog.fields && dialog.fields.map((f, i) => (
+          <div key={f.key} className="mb-3">
+            {f.label && <div className="text-[11px] font-bold c-gold mb-1.5">{f.label}</div>}
+            <input
+              autoFocus={i === 0}
+              value={values[f.key]}
+              onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+              placeholder={f.placeholder}
+              onKeyDown={(e) => e.key === "Enter" && confirm()}
+              className="w-full bg-surface2 rounded-xl px-3.5 py-2.5 text-sm ph-muted outline-none focus-gold c-cream"
+            />
+          </div>
+        ))}
+        <div className="flex gap-2 mt-2">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl text-sm font-bold c-tan" style={{ background: "#171a24" }}>
+            Cancelar
+          </button>
+          <button
+            onClick={confirm}
+            className="flex-1 py-2.5 rounded-xl text-sm font-bold"
+            style={{ background: dialog.danger ? "#dc2626" : "#f2b705", color: dialog.danger ? "#ffffff" : "#0c0e16" }}
+          >
+            {dialog.confirmLabel || "Aceptar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MenuEditor({ catalog, onSave }) {
   const [local, setLocal] = useState(catalog);
   const [dirty, setDirty] = useState(false);
   const [openCat, setOpenCat] = useState(catalog.categories[0]?.id || null);
   const [groupsOpen, setGroupsOpen] = useState(false);
+  const [platoGuarnOpen, setPlatoGuarnOpen] = useState(false);
+  const [dialog, setDialog] = useState(null);
 
   function patch(next) {
     setLocal(next);
@@ -2050,25 +2407,68 @@ function MenuEditor({ catalog, onSave }) {
   }
 
   function addItem(catId) {
-    const name = prompt("Nombre del nuevo producto:");
-    if (!name) return;
-    patch({
-      ...local,
-      categories: local.categories.map((c) =>
-        c.id !== catId ? c : { ...c, items: [...c.items, { id: uid(), name, price: 0 }] }
-      ),
+    setDialog({
+      title: "Nuevo producto",
+      fields: [{ key: "name", label: "Nombre", placeholder: "Nombre del producto" }],
+      confirmLabel: "Agregar",
+      onConfirm: ({ name }) => {
+        patch({
+          ...local,
+          categories: local.categories.map((c) =>
+            c.id !== catId ? c : { ...c, items: [...c.items, { id: uid(), name, price: 0 }] }
+          ),
+        });
+      },
     });
   }
 
   function removeCategory(catId) {
-    if (!confirm("¿Eliminar esta categoría y todos sus productos?")) return;
-    patch({ ...local, categories: local.categories.filter((c) => c.id !== catId) });
+    setDialog({
+      title: "Eliminar categoría",
+      message: "¿Eliminar esta categoría y todos sus productos? Esta acción no se puede deshacer.",
+      confirmLabel: "Eliminar",
+      danger: true,
+      onConfirm: () => {
+        patch({ ...local, categories: local.categories.filter((c) => c.id !== catId) });
+      },
+    });
   }
 
   function addCategory() {
-    const name = prompt("Nombre de la nueva categoría:");
-    if (!name) return;
-    patch({ ...local, categories: [...local.categories, { id: uid(), name, emoji: "🍽️", items: [] }] });
+    setDialog({
+      title: "Nueva categoría",
+      fields: [
+        { key: "name", label: "Nombre", placeholder: "Ej: Empanadas" },
+        { key: "emoji", label: "Emoji (opcional)", placeholder: "🥟", optional: true, defaultValue: "🍽️" },
+      ],
+      confirmLabel: "Crear",
+      onConfirm: ({ name, emoji }) => {
+        patch({ ...local, categories: [...local.categories, { id: uid(), name, emoji: emoji || "🍽️", items: [] }] });
+      },
+    });
+  }
+
+  function editCategoryEmoji(catId, currentEmoji) {
+    setDialog({
+      title: "Cambiar emoji de la categoría",
+      fields: [{ key: "emoji", label: "Emoji", placeholder: "🍽️", defaultValue: currentEmoji || "🍽️" }],
+      confirmLabel: "Guardar",
+      onConfirm: ({ emoji }) => {
+        patch({
+          ...local,
+          categories: local.categories.map((c) => (c.id !== catId ? c : { ...c, emoji })),
+        });
+      },
+    });
+  }
+
+  function moveCategory(catId, direction) {
+    const idx = local.categories.findIndex((c) => c.id === catId);
+    const swapWith = idx + direction;
+    if (idx === -1 || swapWith < 0 || swapWith >= local.categories.length) return;
+    const next = [...local.categories];
+    [next[idx], next[swapWith]] = [next[swapWith], next[idx]];
+    patch({ ...local, categories: next });
   }
 
   async function save() {
@@ -2086,46 +2486,90 @@ function MenuEditor({ catalog, onSave }) {
     setDirty(false);
   }
   function addModifierGroup() {
-    const name = prompt("Nombre del nuevo grupo (ej: Salsas):");
-    if (!name) return;
-    const emoji = prompt("Emoji para el grupo (opcional):", "🍽️") || "🍽️";
-    saveGroupsNow([...(local.modifierGroups || []), { id: uid(), emoji, name, options: [] }]);
+    setDialog({
+      title: "Nuevo grupo de personalización",
+      fields: [
+        { key: "name", label: "Nombre", placeholder: "Ej: Salsas" },
+        { key: "emoji", label: "Emoji (opcional)", placeholder: "🍽️", optional: true, defaultValue: "🍽️" },
+      ],
+      confirmLabel: "Crear",
+      onConfirm: ({ name, emoji }) => {
+        saveGroupsNow([...(local.modifierGroups || []), { id: uid(), emoji: emoji || "🍽️", name, options: [] }]);
+      },
+    });
   }
   function removeModifierGroup(groupId) {
-    if (!confirm("¿Eliminar este grupo? Se quita de todos los productos que lo tengan asignado.")) return;
-    const next = {
-      ...local,
-      modifierGroups: local.modifierGroups.filter((g) => g.id !== groupId),
-      categories: local.categories.map((c) => ({
-        ...c,
-        items: c.items.map((it) => ({ ...it, modifierGroupIds: (it.modifierGroupIds || []).filter((id) => id !== groupId) })),
-      })),
-    };
-    setLocal(next);
-    onSave(next);
-    setDirty(false);
+    setDialog({
+      title: "Eliminar grupo",
+      message: "¿Eliminar este grupo? Se quita de todos los productos que lo tengan asignado.",
+      confirmLabel: "Eliminar",
+      danger: true,
+      onConfirm: () => {
+        const next = {
+          ...local,
+          modifierGroups: local.modifierGroups.filter((g) => g.id !== groupId),
+          categories: local.categories.map((c) => ({
+            ...c,
+            items: c.items.map((it) => ({ ...it, modifierGroupIds: (it.modifierGroupIds || []).filter((id) => id !== groupId) })),
+          })),
+        };
+        setLocal(next);
+        onSave(next);
+        setDirty(false);
+      },
+    });
   }
   function addOptionToGroup(groupId) {
-    const opt = prompt("Nueva opción:");
-    if (!opt) return;
-    saveGroupsNow(local.modifierGroups.map((g) => (g.id !== groupId ? g : { ...g, options: [...g.options, opt] })));
+    setDialog({
+      title: "Nueva opción",
+      fields: [{ key: "opt", label: "Nombre de la opción", placeholder: "Ej: Ketchup" }],
+      confirmLabel: "Agregar",
+      onConfirm: ({ opt }) => {
+        saveGroupsNow(local.modifierGroups.map((g) => (g.id !== groupId ? g : { ...g, options: [...g.options, opt] })));
+      },
+    });
   }
   function removeOptionFromGroup(groupId, opt) {
     saveGroupsNow(local.modifierGroups.map((g) => (g.id !== groupId ? g : { ...g, options: g.options.filter((o) => o !== opt) })));
   }
 
+  // Guarniciones de "Comida al Plato" — lista aparte, con toggle de
+  // disponibilidad por opción (ej: sacar "Arroz" de noche sin borrarlo).
+  async function savePlatoGuarnNow(next) {
+    const nextCatalog = { ...local, platoGuarniciones: next };
+    setLocal(nextCatalog);
+    await onSave(nextCatalog);
+    setDirty(false);
+  }
+  function addPlatoGuarnicion() {
+    setDialog({
+      title: "Nueva guarnición",
+      fields: [{ key: "label", label: "Nombre", placeholder: "Ej: Ensalada rusa" }],
+      confirmLabel: "Agregar",
+      onConfirm: ({ label }) => {
+        savePlatoGuarnNow([...(local.platoGuarniciones || []), { label, active: true }]);
+      },
+    });
+  }
+  function removePlatoGuarnicion(label) {
+    savePlatoGuarnNow((local.platoGuarniciones || []).filter((g) => g.label !== label));
+  }
+  function togglePlatoGuarnicionActive(label) {
+    savePlatoGuarnNow((local.platoGuarniciones || []).map((g) => (g.label !== label ? g : { ...g, active: g.active === false })));
+  }
+
   return (
     <div className="pb-10">
       {dirty && (
-        <div className="sticky top-0 z-10 -mx-5 px-5 py-2.5 mb-3 flex items-center justify-between" style={{ background: "#191310", borderBottom: "1px solid #2E241D" }}>
+        <div className="sticky top-0 z-10 -mx-5 px-5 py-2.5 mb-3 flex items-center justify-between" style={{ background: "#0c0e16", borderBottom: "1px solid #171a24" }}>
           <span className="text-xs c-gold">Tenés cambios sin guardar</span>
-          <button onClick={save} className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold" style={{ background: "#F2B705", color: "#191310" }}>
+          <button onClick={save} className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold" style={{ background: "#f2b705", color: "#0c0e16" }}>
             <Save size={13} /> Guardar cambios
           </button>
         </div>
       )}
 
-      <div className="mb-4 rounded-2xl overflow-hidden" style={{ background: "#241C17", border: "1px solid #2E241D" }}>
+      <div className="mb-4 rounded-2xl overflow-hidden" style={{ background: "#11131b", border: "1px solid #171a24" }}>
         <button onClick={() => setGroupsOpen((v) => !v)} className="w-full p-3.5 flex items-center justify-between">
           <span className="font-bold text-sm c-cream">🧩 Grupos de personalización</span>
           <ChevronRight size={14} className="c-muted" style={{ transform: groupsOpen ? "rotate(90deg)" : "none" }} />
@@ -2136,7 +2580,7 @@ function MenuEditor({ catalog, onSave }) {
               Estos son los grupos que después podés activar por producto (ej: "Verduras" para ofrecer con/sin tomate). Cambios acá se guardan solos.
             </p>
             {(local.modifierGroups || []).map((g) => (
-              <div key={g.id} className="p-3 rounded-xl" style={{ background: "#2E241D" }}>
+              <div key={g.id} className="p-3 rounded-xl" style={{ background: "#171a24" }}>
                 <div className="flex items-center justify-between mb-2">
                   <span className="font-bold text-xs c-cream">{g.emoji} {g.name}</span>
                   <button onClick={() => removeModifierGroup(g.id)}><Trash2 size={12} className="c-red" /></button>
@@ -2154,30 +2598,71 @@ function MenuEditor({ catalog, onSave }) {
                 <button onClick={() => addOptionToGroup(g.id)} className="text-[11px] font-bold c-gold">+ Agregar opción</button>
               </div>
             ))}
-            <button onClick={addModifierGroup} className="w-full py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5" style={{ background: "#191310", color: "#F2B705" }}>
+            <button onClick={addModifierGroup} className="w-full py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5" style={{ background: "#0c0e16", color: "#f2b705" }}>
               <PlusCircle size={13} /> Nuevo grupo
             </button>
           </div>
         )}
       </div>
 
-      {local.categories.map((cat) => (
-        <div key={cat.id} className="mb-3 rounded-2xl overflow-hidden" style={{ background: "#241C17", border: "1px solid #2E241D" }}>
-          <div className="p-3.5 flex items-center justify-between">
-            <button onClick={() => setOpenCat(openCat === cat.id ? null : cat.id)} className="flex items-center gap-2 text-left flex-1">
-              <span>{cat.emoji}</span>
-              <span className="font-bold text-sm">{cat.name}</span>
-              <span className="text-[10px] c-muted">({cat.items.length})</span>
+      <div className="mb-4 rounded-2xl overflow-hidden" style={{ background: "#11131b", border: "1px solid #171a24" }}>
+        <button onClick={() => setPlatoGuarnOpen((v) => !v)} className="w-full p-3.5 flex items-center justify-between">
+          <span className="font-bold text-sm c-cream">🍽️ Guarniciones de Comida al Plato</span>
+          <ChevronRight size={14} className="c-muted" style={{ transform: platoGuarnOpen ? "rotate(90deg)" : "none" }} />
+        </button>
+        {platoGuarnOpen && (
+          <div className="px-3.5 pb-3.5 space-y-2">
+            <p className="text-[11px] c-muted -mt-1 mb-1">
+              Guarnición obligatoria a elección para los platos que la requieren. Apagá una opción puntual si por ahora no queda (ej: "Arroz" a la noche) sin borrarla.
+            </p>
+            {(local.platoGuarniciones || []).map((g) => (
+              <div key={g.label} className="p-3 rounded-xl flex items-center justify-between gap-2" style={{ background: "#171a24" }}>
+                <button
+                  onClick={() => togglePlatoGuarnicionActive(g.label)}
+                  className="flex-1 text-left text-xs font-bold"
+                  style={{ color: g.active === false ? "#6b7280" : "#ffffff", textDecoration: g.active === false ? "line-through" : "none" }}
+                >
+                  {g.active === false ? "🚫" : "✅"} {g.label}
+                </button>
+                <button onClick={() => removePlatoGuarnicion(g.label)} className="shrink-0">
+                  <Trash2 size={13} className="c-red" />
+                </button>
+              </div>
+            ))}
+            <button onClick={addPlatoGuarnicion} className="w-full py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5" style={{ background: "#0c0e16", color: "#f2b705" }}>
+              <PlusCircle size={13} /> Nueva guarnición
             </button>
-            <button onClick={() => removeCategory(cat.id)} className="w-7 h-7 rounded-full flex items-center justify-center shrink-0" style={{ background: "#2E241D" }}>
-              <Trash2 size={12} className="c-red" />
-            </button>
+          </div>
+        )}
+      </div>
+
+      {local.categories.map((cat, catIdx) => (
+        <div key={cat.id} className="mb-3 rounded-2xl overflow-hidden" style={{ background: "#11131b", border: "1px solid #171a24" }}>
+          <div className="p-3.5 flex items-center justify-between gap-1">
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <button onClick={() => editCategoryEmoji(cat.id, cat.emoji)} className="shrink-0 text-lg leading-none">{cat.emoji}</button>
+              <button onClick={() => setOpenCat(openCat === cat.id ? null : cat.id)} className="flex items-center gap-2 text-left flex-1 min-w-0">
+                <span className="font-bold text-sm truncate">{cat.name}</span>
+                <span className="text-[10px] c-muted shrink-0">({cat.items.length})</span>
+              </button>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button onClick={() => moveCategory(cat.id, -1)} disabled={catIdx === 0} className="w-7 h-7 rounded-full flex items-center justify-center disabled:opacity-30" style={{ background: "#171a24" }}>
+                <ChevronRight size={12} className="c-tan" style={{ transform: "rotate(-90deg)" }} />
+              </button>
+              <button onClick={() => moveCategory(cat.id, 1)} disabled={catIdx === local.categories.length - 1} className="w-7 h-7 rounded-full flex items-center justify-center disabled:opacity-30" style={{ background: "#171a24" }}>
+                <ChevronRight size={12} className="c-tan" style={{ transform: "rotate(90deg)" }} />
+              </button>
+              <button onClick={() => removeCategory(cat.id)} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: "#171a24" }}>
+                <Trash2 size={12} className="c-red" />
+              </button>
+            </div>
           </div>
 
           {openCat === cat.id && (
             <div className="px-3.5 pb-3.5 space-y-2">
               {cat.items.map((item) => (
-                <div key={item.id} className="p-3 rounded-xl" style={{ background: "#2E241D" }}>
+                <div key={item.id} className="p-3 rounded-xl" style={{ background: "#171a24" }}>
                   <div className="flex items-center gap-2 mb-2">
                     <input
                       value={item.name}
@@ -2197,7 +2682,7 @@ function MenuEditor({ catalog, onSave }) {
                         <span className="text-lg">{cat.emoji}</span>
                       </div>
                     )}
-                    <label className="text-[11px] font-bold px-3 py-1.5 rounded-lg cursor-pointer" style={{ background: "#191310", color: "#F2B705" }}>
+                    <label className="text-[11px] font-bold px-3 py-1.5 rounded-lg cursor-pointer" style={{ background: "#0c0e16", color: "#f2b705" }}>
                       {item.image ? "Cambiar foto" : "Subir foto"}
                       <input
                         type="file"
@@ -2250,7 +2735,7 @@ function MenuEditor({ catalog, onSave }) {
                             key={g.id}
                             onClick={() => toggleModifierGroupForItem(cat.id, item, g.id)}
                             className="px-2.5 py-1 rounded-lg text-[10px] font-bold"
-                            style={{ background: on ? "#F2B705" : "#191310", color: on ? "#191310" : "#6B5D4F" }}
+                            style={{ background: on ? "#f2b705" : "#0c0e16", color: on ? "#0c0e16" : "#6b7280" }}
                           >
                             {g.emoji} {g.name}
                           </button>
@@ -2263,15 +2748,15 @@ function MenuEditor({ catalog, onSave }) {
                     onClick={() => toggleActiveNow(cat.id, item.id, item.active === false)}
                     className="mt-2.5 w-full py-1.5 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1.5"
                     style={{
-                      background: item.active === false ? "#3A1414" : "#16301C",
-                      color: item.active === false ? "#EF6461" : "#4ADE80",
+                      background: item.active === false ? "#450a0a" : "#14532d",
+                      color: item.active === false ? "#f87171" : "#4ade80",
                     }}
                   >
                     {item.active === false ? "🚫 Agotado hoy — tocá para reactivar" : "✅ Disponible — tocá para marcar agotado"}
                   </button>
                 </div>
               ))}
-              <button onClick={() => addItem(cat.id)} className="w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5" style={{ background: "#191310", color: "#F2B705" }}>
+              <button onClick={() => addItem(cat.id)} className="w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5" style={{ background: "#0c0e16", color: "#f2b705" }}>
                 <PlusCircle size={13} /> Agregar producto
               </button>
             </div>
@@ -2279,9 +2764,11 @@ function MenuEditor({ catalog, onSave }) {
         </div>
       ))}
 
-      <button onClick={addCategory} className="w-full py-3 rounded-2xl text-sm font-bold flex items-center justify-center gap-1.5 mt-2" style={{ background: "#2E241D", color: "#F2B705" }}>
+      <button onClick={addCategory} className="w-full py-3 rounded-2xl text-sm font-bold flex items-center justify-center gap-1.5 mt-2" style={{ background: "#171a24", color: "#f2b705" }}>
         <PlusCircle size={15} /> Nueva categoría
       </button>
+
+      {dialog && <AdminPromptModal dialog={dialog} onClose={() => setDialog(null)} />}
     </div>
   );
 }
@@ -2389,11 +2876,11 @@ function PromosPanel({ catalog, onSave }) {
           ? " Podés subirle una foto o un video de fondo (el video tiene prioridad si cargás los dos)."
           : " Podés subirle una foto de fondo (para video hace falta tener conectado el almacenamiento de Supabase)."}
       </p>
-      {uploadError && <p className="text-xs mb-4" style={{ color: "#EF6461" }}>{uploadError}</p>}
+      {uploadError && <p className="text-xs mb-4" style={{ color: "#f87171" }}>{uploadError}</p>}
 
       <div className="space-y-2.5 mb-5">
         {promos.map((p, idx) => (
-          <div key={p.id} className="p-3.5 rounded-xl" style={{ background: "#241C17", border: "1px solid #2E241D" }}>
+          <div key={p.id} className="p-3.5 rounded-xl" style={{ background: "#11131b", border: "1px solid #171a24" }}>
             <div className="flex items-start justify-between gap-2 mb-2.5">
               <div className="min-w-0">
                 {idx === 0 && <span className="text-[9px] font-bold c-gold uppercase tracking-wide">★ Portada principal</span>}
@@ -2414,13 +2901,13 @@ function PromosPanel({ catalog, onSave }) {
                 <div className="w-20 h-11 rounded-lg shrink-0 flex items-center justify-center bg-dark c-muted text-[9px] text-center">sin media</div>
               )}
 
-              <label className="text-[11px] font-bold px-3 py-1.5 rounded-lg cursor-pointer" style={{ background: "#191310", color: "#F2B705" }}>
+              <label className="text-[11px] font-bold px-3 py-1.5 rounded-lg cursor-pointer" style={{ background: "#0c0e16", color: "#f2b705" }}>
                 {uploadingId === p.id ? "Subiendo…" : p.image ? "Cambiar foto" : "Subir foto"}
                 <input type="file" accept="image/*" className="hidden" disabled={uploadingId === p.id} onChange={(e) => handleImageFile(p.id, e.target.files && e.target.files[0])} />
               </label>
 
               {fileStorageAvailable && (
-                <label className="text-[11px] font-bold px-3 py-1.5 rounded-lg cursor-pointer" style={{ background: "#191310", color: "#F2B705" }}>
+                <label className="text-[11px] font-bold px-3 py-1.5 rounded-lg cursor-pointer" style={{ background: "#0c0e16", color: "#f2b705" }}>
                   {uploadingId === p.id ? "Subiendo…" : p.video ? "Cambiar video" : "Subir video"}
                   <input type="file" accept="video/*" className="hidden" disabled={uploadingId === p.id} onChange={(e) => handleVideoFile(p.id, e.target.files && e.target.files[0])} />
                 </label>
@@ -2452,7 +2939,7 @@ function PromosPanel({ catalog, onSave }) {
         )}
       </div>
 
-      <div className="p-3.5 rounded-xl space-y-2.5" style={{ background: "#241C17", border: "1px solid #2E241D" }}>
+      <div className="p-3.5 rounded-xl space-y-2.5" style={{ background: "#11131b", border: "1px solid #171a24" }}>
         <div className="text-xs font-bold c-gold">Nueva promo</div>
         <input
           value={title}
@@ -2470,7 +2957,7 @@ function PromosPanel({ catalog, onSave }) {
           onClick={addPromo}
           disabled={!title.trim() || saving}
           className="w-full py-2.5 rounded-lg text-xs font-bold disabled:opacity-40"
-          style={{ background: "#F2B705", color: "#191310" }}
+          style={{ background: "#f2b705", color: "#0c0e16" }}
         >
           + Agregar promo
         </button>
@@ -2500,11 +2987,59 @@ function SettingsPanel({ catalog, onSave }) {
       <Field label="Teléfono (a mostrar)" value={s.phoneDisplay} onChange={(v) => set("phoneDisplay", v)} />
       <Field label="WhatsApp (solo números, con código de país, ej: 5493874125784)" value={s.whatsapp} onChange={(v) => set("whatsapp", v)} />
       <Field label="Frase destacada" value={s.accentNote} onChange={(v) => set("accentNote", v)} />
+
+      <div className="pt-4 mt-4" style={{ borderTop: "1px solid #232735" }}>
+        <div className="font-display text-sm c-cream mb-3">Portada (sección grande de arriba del menú)</div>
+      </div>
+
+      <div>
+        <div className="text-[11px] font-bold c-gold mb-1.5">Producto destacado de la portada</div>
+        <select
+          value={s.heroFeaturedItemId || ""}
+          onChange={(e) => set("heroFeaturedItemId", e.target.value)}
+          className="w-full bg-surface2 rounded-xl px-3.5 py-2.5 text-sm outline-none focus-gold c-cream"
+        >
+          <option value="">Automático (el primer producto activo con foto)</option>
+          {catalog.categories.map((cat) => (
+            <optgroup key={cat.id} label={cat.name}>
+              {cat.items.map((it) => (
+                <option key={it.id} value={it.id}>{it.name}{(it.image || PRODUCT_IMAGES[it.id]) ? "" : " (sin foto)"}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        <div className="text-[11px] c-muted mt-1.5">La foto, el precio y (si no escribís una bajada abajo) la descripción salen de este producto.</div>
+      </div>
+
+      <Field label="Badge chico (ej: ⭐ Más pedido de Salta)" value={s.heroBadgeText} onChange={(v) => set("heroBadgeText", v)} />
+
+      <div>
+        <div className="text-[11px] font-bold c-gold mb-1.5">Título — 3 partes (la del medio sale en dorado)</div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <input value={s.heroHeadlinePre} onChange={(e) => set("heroHeadlinePre", e.target.value)} placeholder="LOS MEJORES" className="w-full bg-surface2 rounded-xl px-3.5 py-2.5 text-sm ph-muted outline-none focus-gold c-cream" />
+          <input value={s.heroHeadlineHighlight} onChange={(e) => set("heroHeadlineHighlight", e.target.value)} placeholder="LOMOS Y SÁNDWICHES" className="w-full bg-surface2 rounded-xl px-3.5 py-2.5 text-sm ph-muted outline-none focus-gold c-gold" />
+          <input value={s.heroHeadlinePost} onChange={(e) => set("heroHeadlinePost", e.target.value)} placeholder="DE LA CIUDAD." className="w-full bg-surface2 rounded-xl px-3.5 py-2.5 text-sm ph-muted outline-none focus-gold c-cream" />
+        </div>
+      </div>
+
+      <div>
+        <div className="text-[11px] font-bold c-gold mb-1.5">Bajada (opcional)</div>
+        <textarea
+          value={s.heroSubtitle}
+          onChange={(e) => set("heroSubtitle", e.target.value)}
+          placeholder="Dejalo vacío para usar automáticamente la descripción del producto destacado"
+          rows={2}
+          className="w-full bg-surface2 rounded-xl px-3.5 py-2.5 text-sm ph-muted outline-none focus-gold c-cream resize-none"
+        />
+      </div>
+
+      <Field label="Nota de demora (ej: 20-30 min demora)" value={s.heroDeliveryNote} onChange={(v) => set("heroDeliveryNote", v)} />
+
       <button
         disabled={!dirty}
         onClick={save}
         className="w-full py-3 rounded-2xl font-display disabled:opacity-40 flex items-center justify-center gap-2"
-        style={{ background: "#F2B705", color: "#191310" }}
+        style={{ background: "#f2b705", color: "#0c0e16" }}
       >
         <Save size={15} /> Guardar configuración
       </button>

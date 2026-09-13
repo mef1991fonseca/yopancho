@@ -99,17 +99,69 @@ cuando lleguen a este punto y te acompaño con eso también.
 
 ---
 
+---
+
+## Parte 4 — Fotos y video de alta calidad para las promos (opcional)
+
+Por defecto, las fotos de promo se guardan comprimidas junto con el resto de
+los datos. Si querés fotos en mejor calidad, o video de fondo en el banner
+principal (como tiene la competencia), hace falta activar el almacenamiento
+de archivos de Supabase — es gratis y son 2 minutos:
+
+1. En tu proyecto de Supabase, andá al **SQL Editor** → **New query**.
+2. Abrí el archivo `supabase/storage.sql` de este proyecto, copiá todo su
+   contenido, pegalo, y tocá **Run**.
+3. Listo — en Admin → Promos vas a ver un botón nuevo, "Subir video", además
+   del de foto. Los videos se reproducen solos, en loop y sin sonido, de
+   fondo en el banner principal (máximo 25MB por video — si es más pesado,
+   recortalo o comprimilo antes de subirlo).
+
+Sin este paso, todo sigue funcionando igual, solo que las promos usan fotos
+comprimidas en vez de archivos en calidad completa, y no hay opción de video.
+
+---
+
+## Parte 5 — Crear el usuario del panel admin (login real)
+
+Ya no hace falta el PIN — el panel usa email + contraseña reales a través
+de Supabase Auth. Para crear el primer usuario:
+
+1. En tu proyecto de Supabase, andá a **Authentication** (ícono de personas,
+   menú izquierdo) → **Users** → **"Add user"** → **"Create new user"**.
+2. Cargá el email y una contraseña para quien va a administrar el local
+   (podés crear más de uno si hay varias personas a cargo).
+3. Importante: tildá **"Auto Confirm User"** al crearlo (o si no aparece esa
+   opción, entrá al usuario recién creado y confirmá el email manualmente)
+   — si no, Supabase le va a pedir confirmar el email antes de poder
+   entrar, y por ahora no configuramos el envío de esos mails.
+4. Volvé al SQL Editor y volvé a correr `supabase/schema.sql` completo si
+   todavía no lo hiciste con esta versión — esta vez además de crear la
+   tabla, deja el menú protegido para que solo un usuario logueado pueda
+   editarlo (antes, cualquiera con la clave pública del proyecto podía
+   editar precios directamente, sin pasar por el panel).
+5. Listo — en `/admin` ahora vas a ver campos de **Email** y
+   **Contraseña** en vez del PIN. Iniciá sesión con el usuario que creaste.
+
+La sesión queda guardada en el navegador (no hay que loguearse de nuevo
+cada vez que se recarga la página), hasta que alguien toque "Cerrar
+sesión".
+
+---
+
 ## Qué queda pendiente después de esto
 
-- **Reemplazar el PIN fijo del panel admin por un login real.** Hoy
-  cualquiera que entre a `/admin` y sepa el PIN (`1234` por defecto, ver
-  `ADMIN_PIN` en `src/App.jsx`) puede gestionar pedidos y editar el menú.
-  Para un cliente real esto conviene resolverlo antes de compartir la URL
-  ampliamente — es el siguiente paso lógico de seguridad.
 - **Confirmar el número de WhatsApp real del local** en Admin →
   Configuración (formato: código de país + número, sin espacios ni signos).
 - **Revisar los precios cargados contra la carta vigente** del local antes
   de la puesta en marcha definitiva.
+- **(Mejora de privacidad, no bloqueante)**: hoy la lectura de datos es
+  pública para que la tienda funcione sin login — en teoría, alguien con la
+  clave pública del proyecto podría leer la lista completa de pedidos
+  (nombres y teléfonos incluidos) directo por API, no solo a través de la
+  app. Para un local chico es un riesgo bajo, pero si en algún momento
+  quieren blindarlo del todo, la solución es mover esa lectura detrás de
+  una función propia del servidor en vez de acceso directo a la tabla —
+  avisame cuando quieran encararlo.
 
 ## Notas técnicas (por si las necesitás más adelante)
 
@@ -121,12 +173,10 @@ cuando lleguen a este punto y te acompaño con eso también.
   necesitás reportes de ventas con SQL (por ejemplo "total vendido por
   semana"), ahí sí conviene migrar a tablas propias (`orders`,
   `menu_items`, etc.) — avisame cuando llegue ese momento.
-- Las políticas de acceso a la base (`Row Level Security`) están abiertas
-  para lectura y escritura pública, porque tanto el cliente como el admin
-  usan la misma clave pública. Es aceptable para este tamaño de proyecto,
-  pero es la razón de fondo por la que el login real del punto anterior
-  importa: hoy la única protección real del panel admin es que nadie
-  adivine el PIN.
+- Las políticas de acceso a la base (`Row Level Security`) ya distinguen
+  entre "cualquiera" (lectura, y escritura de pedidos) y "admin logueado"
+  (escritura del menú, borrado). El detalle completo de qué puede hacer
+  cada uno está comentado en `supabase/schema.sql`.
 - El plan gratuito de Supabase pausa el proyecto automáticamente después de
   varios días sin actividad — con pedidos entrando todos los días esto no
   debería pasar nunca en la práctica, pero si un día la app no carga datos,
