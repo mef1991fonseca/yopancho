@@ -325,6 +325,24 @@ const PRODUCT_IMAGES = {
 };
 
 const ADMIN_PIN = "1234";
+// A filled flame glyph with a visible outline/border — reads better as a
+// small logo mark than a thin single-stroke icon. `stroke` draws the
+// border around the silhouette; pass a lighter tone than `fill` to make it
+// pop off whatever background it sits on.
+function FireIcon({ size = 18, fill = "#0c0e16", stroke = "#0c0e16", strokeWidth = 1, className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" className={className} xmlns="http://www.w3.org/2000/svg">
+      <path
+        d="M12 2.5c.9 2.7-.4 4.2-1.9 5.8-1.8 1.9-3.8 3.9-3.8 7.1a5.7 5.7 0 0 0 5.7 5.7 5.7 5.7 0 0 0 5.7-5.7c0-1.9-.7-3-1.4-4-.2 1-.8 1.9-1.7 1.9-1.1 0-1.5-.9-1.3-2 .3-1.8-.1-3.8-1.3-8.8Z"
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={strokeWidth}
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 const money = (n) => `$${Number(n || 0).toLocaleString("es-AR")}`;
 
 // Generic "chat bubble + phone" glyph in WhatsApp's brand green — evokes the
@@ -572,7 +590,6 @@ export default function App() {
   return (
     <div style={{ background: "#0c0e16", fontFamily: "'Montserrat', sans-serif" }} className="w-full min-h-[700px] c-cream">
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800;900&family=Montserrat:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap');
         .font-display { font-family: 'Syne', sans-serif; letter-spacing: 0.01em; font-weight: 800; }
         .font-mono-t { font-family: 'JetBrains Mono', monospace; }
         .rounded-2xl, .rounded-3xl, .rounded-t-3xl { border-radius: 14px !important; }
@@ -804,7 +821,7 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
     <div className="pb-24 lg:pb-10">
       {/* Top promo strip */}
       <div className="text-center text-[10px] sm:text-[11px] font-medium font-mono-t py-2 px-4 tracking-wide" style={{ background: "#f2b705", color: "#0c0e16" }}>
-        <Flame size={11} strokeWidth={1.5} className="inline -mt-0.5 mr-0.5" />
+        <FireIcon size={12} fill="#ea580c" stroke="#7c2d12" strokeWidth={0.75} className="inline -mt-0.5 mr-0.5" />
         ¡TODOS LOS PEDIDOS SALEN CON PAPAS FRITAS INCLUIDAS! • {catalog.settings.address.toUpperCase()} • {catalog.settings.city.toUpperCase()}
       </div>
 
@@ -815,7 +832,7 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
         {/* Logo lockup — small badge + tiny wordmark/tagline */}
         <div className="flex items-center gap-2 shrink-0">
           <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "#f2b705", border: "1.5px solid rgba(255,255,255,0.3)" }}>
-            <Flame size={18} color="#0c0e16" strokeWidth={2.5} />
+            <FireIcon size={20} fill="#0c0e16" stroke="#fdf3d9" strokeWidth={0.6} />
           </div>
           <div className="hidden sm:block leading-none">
             <div className="font-bold text-[11px] tracking-wide c-cream">YO <span className="c-gold">PANCHO</span></div>
@@ -824,7 +841,7 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
         </div>
 
         {/* Bigger store name + blinking open status */}
-        <div className="hidden 2xl:block shrink-0 leading-tight">
+        <div className="hidden lg:block shrink-0 leading-tight">
           <div className="font-display text-base c-cream">{catalog.settings.storeName.toUpperCase()}</div>
           <div className="flex items-center gap-1.5 text-[11px] c-tan mt-0.5">
             <span className="relative flex w-1.5 h-1.5">
@@ -928,7 +945,7 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
                 <span className="c-gold">{catalog.settings.heroHeadlineHighlight}</span>{" "}
                 {catalog.settings.heroHeadlinePost}
               </h1>
-              <p className="c-tan2 text-sm mt-4 max-w-md leading-relaxed">
+              <p className="text-sm mt-4 max-w-md leading-relaxed" style={{ color: "#f3f4f6" }}>
                 {catalog.settings.heroSubtitle?.trim()
                   ? catalog.settings.heroSubtitle
                   : (heroItem && heroItem.desc ? heroItem.desc : "Carnes premium a la plancha, papas rústicas doradas y el sabor callejero nocturno de Salta, directo a tu puerta.")}
