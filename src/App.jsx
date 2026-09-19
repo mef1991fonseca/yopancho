@@ -158,9 +158,9 @@ const DEFAULT_CATALOG = {
     {
       id: "plato", name: "Comida al Plato", emoji: "🍖",
       items: [
-        { id: "plato-mila-napo", name: "Milanesa napolitana", desc: "Carne, pollo o cerdo", proteinChoices: ["Carne", "Pollo", "Cerdo"], price: 14000 },
-        { id: "plato-mila-caballo", name: "Milanesa a caballo", desc: "Carne, pollo o cerdo", proteinChoices: ["Carne", "Pollo", "Cerdo"], price: 14000 },
-        { id: "plato-costeleta", name: "Costeleta a caballo", desc: "Carne o cerdo", proteinChoices: ["Carne", "Cerdo"], price: 14000 },
+        { id: "plato-mila-napo", name: "Milanesa napolitana", desc: "Carne, pollo o cerdo · Guarnición a elección", proteinChoices: ["Carne", "Pollo", "Cerdo"], requiresGuarnicion: true, price: 14000 },
+        { id: "plato-mila-caballo", name: "Milanesa a caballo", desc: "Carne, pollo o cerdo · Guarnición a elección", proteinChoices: ["Carne", "Pollo", "Cerdo"], requiresGuarnicion: true, price: 14000 },
+        { id: "plato-costeleta", name: "Costeleta a caballo", desc: "Carne o cerdo · Guarnición a elección", proteinChoices: ["Carne", "Cerdo"], requiresGuarnicion: true, price: 14000 },
         { id: "plato-2hamburguesas", name: "2 Hamburguesas caseras a caballo", desc: "Con papas fritas y huevo frito", price: 14000 },
         { id: "plato-bife-pollo", name: "Bife de pollo", desc: "Guarnición a elección", requiresGuarnicion: true, price: 12000 },
         { id: "plato-lomo-caballo", name: "Lomo a caballo", desc: "Con papas fritas y huevo frito", price: 14000 },
@@ -208,15 +208,6 @@ const DEFAULT_CATALOG = {
         { id: "jugo-baggio", name: "Jugo Fresh Baggio 1.5L", price: 3500 },
       ],
     },
-    {
-      id: "extras", name: "Extras", emoji: "➕",
-      items: [
-        { id: "extra-cheddar-bacon", name: "Cheddar y bacon", price: 1500 },
-        { id: "extra-porcion-mila", name: "Porción de mila", price: 4000 },
-        { id: "extra-porcion-lomo", name: "Porción de lomo", price: 4000 },
-        { id: "extra-hamburguesa", name: "1 hamburguesa extra", price: 4000 },
-      ],
-    },
   ],
   // Guarnición a elección para "Comida al Plato" — un solo lado por plato
   // (distinto de los grupos de personalización de abajo, que son opcionales).
@@ -250,6 +241,16 @@ const DEFAULT_CATALOG = {
     { id: "guarniciones-sandwich", emoji: "🍟", name: "Guarniciones", options: [
       "Aceituna rodaja", "Choclo grano", "Criolla", "Cebolla en escabeche", "Ají en vinagre", "Berenjena en escabeche",
     ] },
+    // A diferencia de los grupos de arriba (gratis), cada opción acá tiene un
+    // precio — se suma al total del producto cuando el cliente la elige. Se
+    // muestran con "+$monto" al lado en vez de aparecer como una categoría
+    // de menú aparte, para que quede claro que es un agregado con costo.
+    { id: "extras", emoji: "➕", name: "Extras", options: [
+      { name: "Cheddar y bacon", price: 1500 },
+      { name: "Porción de mila", price: 4000 },
+      { name: "Porción de lomo", price: 4000 },
+      { name: "1 hamburguesa extra", price: 4000 },
+    ] },
   ],
   // Promos destacadas, tipo "portada" — el admin las carga desde el panel;
   // arranca vacío para no inventar precios que el local no confirmó.
@@ -259,14 +260,15 @@ const DEFAULT_CATALOG = {
 // Qué grupos de personalización se ofrecen por defecto según la categoría del
 // producto (el admin puede después activar/desactivar grupos por producto).
 const CATEGORY_DEFAULT_MODIFIER_GROUPS = {
-  "sandwiches": ["verduras", "aderezos", "guarniciones-sandwich"],
-  "mila-lili-especial": ["verduras", "aderezos", "guarniciones-sandwich"],
-  "vacio": ["verduras", "aderezos", "guarniciones-sandwich"],
-  "pollo-asado-sandwich": ["verduras", "aderezos", "guarniciones-sandwich"],
-  "hamb-paty": ["verduras", "aderezos", "toppings"],
-  "smash": ["verduras", "aderezos", "salsas-especiales", "toppings"],
-  "veggie": ["verduras", "aderezos", "toppings"],
-  "compartir": ["verduras", "aderezos", "guarniciones-sandwich"],
+  "sandwiches": ["verduras", "aderezos", "guarniciones-sandwich", "extras"],
+  "mila-lili-especial": ["verduras", "aderezos", "guarniciones-sandwich", "extras"],
+  "vacio": ["verduras", "aderezos", "guarniciones-sandwich", "extras"],
+  "pollo-asado-sandwich": ["verduras", "aderezos", "guarniciones-sandwich", "extras"],
+  "hamb-paty": ["verduras", "aderezos", "toppings", "extras"],
+  "smash": ["verduras", "aderezos", "salsas-especiales", "toppings", "extras"],
+  "veggie": ["verduras", "aderezos", "toppings", "extras"],
+  "compartir": ["verduras", "aderezos", "guarniciones-sandwich", "extras"],
+  "plato": ["extras"],
   "papuchas": ["aderezos"],
   "panchos": ["aderezos"],
   "pizzetas": ["aderezos"],
@@ -275,7 +277,7 @@ const CATEGORY_DEFAULT_MODIFIER_GROUPS = {
 // Bump this whenever CATEGORY_DEFAULT_MODIFIER_GROUPS changes, so catalogs
 // already saved (by the local, in storage) pick up the new defaults for
 // items nobody has customized yet — see migrateCatalog() below.
-const MODIFIER_DEFAULTS_VERSION = 2;
+const MODIFIER_DEFAULTS_VERSION = 3;
 
 // Items that need a required protein-type choice (Carne/Pollo/Cerdo), used
 // both by DEFAULT_CATALOG and to backfill catalogs saved before this field
@@ -342,6 +344,12 @@ function FireIcon({ size = 18, fill = "#0c0e16", stroke = "#0c0e16", strokeWidth
     </svg>
   );
 }
+
+// Modifier group options can be a plain string (free, e.g. "Tomate") or an
+// object { name, price } for paid add-ons (e.g. Extras). These helpers let
+// every place that reads an option stay agnostic to which shape it got.
+function optName(opt) { return typeof opt === "string" ? opt : opt.name; }
+function optPrice(opt) { return typeof opt === "string" ? 0 : (opt.price || 0); }
 
 const money = (n) => `$${Number(n || 0).toLocaleString("es-AR")}`;
 
@@ -737,13 +745,14 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
   const cartCount = cart.reduce((s, l) => s + l.qty, 0);
   const cartTotal = cart.reduce((s, l) => s + l.qty * l.price, 0);
 
-  function addLine(item, variant, qty, note) {
+  function addLine(item, variant, qty, note, extraUnitPrice = 0) {
+    const basePrice = variant ? variant.price : item.price;
     const line = {
       lineId: uid(),
       itemId: item.id,
       name: item.name,
       variantLabel: variant ? variant.label : null,
-      price: variant ? variant.price : item.price,
+      price: basePrice + extraUnitPrice,
       qty,
       note: note || "",
     };
@@ -1457,15 +1466,20 @@ function ModifierGroupPicker({ groups, selected, onToggle }) {
             <span className="mr-1">{group.emoji}</span>{group.name} (opcional, elegí los que quieras)
           </div>
           <div className="flex gap-1.5 flex-wrap max-h-32 overflow-y-auto pr-1">
-            {group.options.map((opt) => (
-              <button
-                key={opt}
-                onClick={() => onToggle(group.id, opt)}
-                className={`chip px-3 py-1.5 rounded-full text-[11px] font-bold ${(selected[group.id] || []).includes(opt) ? "active" : ""}`}
-              >
-                {opt}
-              </button>
-            ))}
+            {group.options.map((opt) => {
+              const name = optName(opt);
+              const price = optPrice(opt);
+              return (
+                <button
+                  key={name}
+                  onClick={() => onToggle(group.id, name)}
+                  className={`chip px-3 py-1.5 rounded-full text-[11px] font-bold ${(selected[group.id] || []).includes(name) ? "active" : ""}`}
+                >
+                  {name}
+                  {price > 0 && <span className="font-mono-t ml-1" style={{ opacity: 0.75 }}>+{money(price)}</span>}
+                </button>
+              );
+            })}
           </div>
         </div>
       ))}
@@ -1506,10 +1520,27 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
 
   function groupsNote(sel) {
     return activeGroups
-      .map((g) => (sel[g.id] && sel[g.id].length ? `${g.name}: ${sel[g.id].join(", ")}` : ""))
+      .map((g) => {
+        const chosen = sel[g.id] || [];
+        if (!chosen.length) return "";
+        const labeled = chosen.map((name) => {
+          const opt = g.options.find((o) => optName(o) === name);
+          const p = opt ? optPrice(opt) : 0;
+          return p > 0 ? `${name} (+${money(p)})` : name;
+        });
+        return `${g.name}: ${labeled.join(", ")}`;
+      })
       .filter(Boolean)
       .join(" · ");
   }
+
+  function sumExtras(sel) {
+    return activeGroups.reduce((sum, g) => {
+      const chosen = sel[g.id] || [];
+      return sum + g.options.reduce((s, opt) => (chosen.includes(optName(opt)) ? s + optPrice(opt) : s), 0);
+    }, 0);
+  }
+  const modifierExtra = splitMode ? sumExtras(half1Selected) + sumExtras(half2Selected) : sumExtras(selectedByGroup);
 
   const note = splitMode
     ? [
@@ -1672,12 +1703,12 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
           <p className="text-[11px] mb-2 text-center" style={{ color: "#dc2626" }}>Elegí el tipo (carne, pollo o cerdo) para poder agregar.</p>
         )}
         <button
-          onClick={() => canAdd && onAdd(item, variant, qty, note)}
+          onClick={() => canAdd && onAdd(item, variant, qty, note, modifierExtra)}
           disabled={!canAdd}
           className="w-full py-3.5 rounded-2xl font-display text-base flex items-center justify-center gap-2 disabled:opacity-40"
           style={{ background: "#f2b705", color: "#0c0e16" }}
         >
-          Agregar · {money(price * qty)}
+          Agregar · {money((price + modifierExtra) * qty)}
         </button>
         </div>
       </div>
@@ -2616,15 +2647,21 @@ function MenuEditor({ catalog, onSave }) {
   function addOptionToGroup(groupId) {
     setDialog({
       title: "Nueva opción",
-      fields: [{ key: "opt", label: "Nombre de la opción", placeholder: "Ej: Ketchup" }],
+      message: "Dejá el precio en blanco (o en 0) si es una opción gratis, como elegir sin cebolla o con tomate.",
+      fields: [
+        { key: "opt", label: "Nombre de la opción", placeholder: "Ej: Ketchup" },
+        { key: "price", label: "Precio extra (opcional)", placeholder: "Ej: 1500", optional: true },
+      ],
       confirmLabel: "Agregar",
-      onConfirm: ({ opt }) => {
-        saveGroupsNow(local.modifierGroups.map((g) => (g.id !== groupId ? g : { ...g, options: [...g.options, opt] })));
+      onConfirm: ({ opt, price }) => {
+        const p = Math.round(Number(price) || 0);
+        const entry = p > 0 ? { name: opt, price: p } : opt;
+        saveGroupsNow(local.modifierGroups.map((g) => (g.id !== groupId ? g : { ...g, options: [...g.options, entry] })));
       },
     });
   }
-  function removeOptionFromGroup(groupId, opt) {
-    saveGroupsNow(local.modifierGroups.map((g) => (g.id !== groupId ? g : { ...g, options: g.options.filter((o) => o !== opt) })));
+  function removeOptionFromGroup(groupId, name) {
+    saveGroupsNow(local.modifierGroups.map((g) => (g.id !== groupId ? g : { ...g, options: g.options.filter((o) => optName(o) !== name) })));
   }
 
   // Guarniciones de "Comida al Plato" — lista aparte, con toggle de
@@ -2681,9 +2718,10 @@ function MenuEditor({ catalog, onSave }) {
                 </div>
                 <div className="flex gap-1.5 flex-wrap mb-2">
                   {g.options.map((opt) => (
-                    <span key={opt} className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] bg-dark c-tan">
-                      {opt}
-                      <button onClick={() => removeOptionFromGroup(g.id, opt)} className="c-red">
+                    <span key={optName(opt)} className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] bg-dark c-tan">
+                      {optName(opt)}
+                      {optPrice(opt) > 0 && <span className="font-mono-t c-gold">+{money(optPrice(opt))}</span>}
+                      <button onClick={() => removeOptionFromGroup(g.id, optName(opt))} className="c-red">
                         <X size={10} />
                       </button>
                     </span>
