@@ -146,6 +146,32 @@ export function onAdminAuthChange(callback) {
   return () => data.subscription.unsubscribe();
 }
 
+// Creates a login account for a new encargado. This does NOT use the
+// admin API directly from the browser (that would need the service-role
+// key, which must never ship to a client). Instead it calls an Edge
+// Function that holds that key server-side and itself checks that whoever
+// is calling is the owner account before creating anything — so even if
+// someone finds this function, they can't use it unless they're already
+// logged in as the owner.
+export async function createStaffUser(email, password, name) {
+  if (!supabase) throw new Error("Supabase no está configurado.");
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error("No hay sesión activa.");
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/create-staff-user`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session.access_token}`,
+      apikey: SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({ email, password, name }),
+  });
+  let json;
+  try { json = await res.json(); } catch { json = null; }
+  if (!res.ok || !json || !json.ok) throw new Error((json && json.error) || "No se pudo crear el usuario.");
+  return json;
+}
+
 /* ------------------------------------------------------------------ */
 /*  FILE STORAGE (photos & video for promos)                           */
 /* ------------------------------------------------------------------ */

@@ -4,7 +4,7 @@ import {
   Check, Trash2, Pencil, LogOut, Lock, Save, PlusCircle,
   Search, ArrowLeft, Utensils, Send, RefreshCw, Package, User, Timer, TrendingUp
 } from "lucide-react";
-import { storage, getStorageInitError, authAvailable, adminSignIn, adminSignOut, getAdminSession, onAdminAuthChange, fileStorageAvailable, uploadMediaFile } from "./storage";
+import { storage, getStorageInitError, authAvailable, adminSignIn, adminSignOut, getAdminSession, onAdminAuthChange, fileStorageAvailable, uploadMediaFile, createStaffUser } from "./storage";
 
 /* ------------------------------------------------------------------ */
 /*  DEFAULT CATALOG — seeded once into shared storage on first load    */
@@ -2312,7 +2312,7 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
         {tab === "sales" && <SalesPanel orders={orders} />}
         {tab === "menu" && <MenuEditor catalog={catalog} onSave={onSaveCatalog} />}
         {tab === "promos" && <PromosPanel catalog={catalog} onSave={onSaveCatalog} />}
-        {tab === "settings" && <SettingsPanel catalog={catalog} onSave={onSaveCatalog} />}
+        {tab === "settings" && <SettingsPanel catalog={catalog} onSave={onSaveCatalog} isOwner={session?.user?.app_metadata?.role === "owner"} />}
       </div>
     </div>
   );
@@ -3233,21 +3233,48 @@ function PromosPanel({ catalog, onSave }) {
   );
 }
 
-function StaffEditor({ staff, onChange }) {
+function StaffEditor({ staff, onChange, isOwner }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState(null); // { ok: bool, msg: string }
 
-  function add() {
+  function remove(email) {
+    onChange(staff.filter((s) => s.email !== email));
+  }
+
+  // Owner flow: actually creates the login account (via the Edge Function),
+  // then adds the display name to the list on success.
+  async function createAccount() {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = name.trim();
+    if (!cleanEmail || !cleanName || !password) {
+      setFeedback({ ok: false, msg: "Completá nombre, email y contraseña." });
+      return;
+    }
+    setBusy(true);
+    setFeedback(null);
+    try {
+      await createStaffUser(cleanEmail, password, cleanName);
+      onChange([...staff.filter((s) => s.email !== cleanEmail), { email: cleanEmail, name: cleanName }]);
+      setFeedback({ ok: true, msg: `Cuenta creada. Contraseña: ${password} — pasásela a ${cleanName}.` });
+      setName(""); setEmail(""); setPassword("");
+    } catch (e) {
+      setFeedback({ ok: false, msg: e.message || "No se pudo crear la cuenta." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Non-owner (or Supabase not configured) flow: just the display-name list,
+  // no way to create real accounts from here.
+  function addNameOnly() {
     const cleanEmail = email.trim().toLowerCase();
     const cleanName = name.trim();
     if (!cleanEmail || !cleanName) return;
-    const next = [...staff.filter((s) => s.email !== cleanEmail), { email: cleanEmail, name: cleanName }];
-    onChange(next);
-    setName("");
-    setEmail("");
-  }
-  function remove(email) {
-    onChange(staff.filter((s) => s.email !== email));
+    onChange([...staff.filter((s) => s.email !== cleanEmail), { email: cleanEmail, name: cleanName }]);
+    setName(""); setEmail("");
   }
 
   return (
@@ -3267,7 +3294,14 @@ function StaffEditor({ staff, onChange }) {
           ))}
         </div>
       )}
-      <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2">
+
+      {!isOwner && (
+        <div className="text-[11px] c-muted mb-2">
+          Solo el administrador principal puede crear cuentas de acceso nuevas. Con esta sesión podés cargar un nombre para mostrar, nomás.
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -3280,15 +3314,42 @@ function StaffEditor({ staff, onChange }) {
           placeholder="Email con el que inicia sesión"
           className="w-full bg-surface2 rounded-xl px-3.5 py-2.5 text-sm ph-muted outline-none focus-gold c-cream"
         />
-        <button onClick={add} className="px-4 py-2.5 rounded-xl font-bold text-xs shrink-0" style={{ background: "#f2b705", color: "#0c0e16" }}>
-          Agregar
-        </button>
       </div>
+
+      {isOwner ? (
+        <>
+          <input
+            type="text"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Contraseña para esta cuenta (mínimo 6 caracteres)"
+            className="w-full bg-surface2 rounded-xl px-3.5 py-2.5 text-sm ph-muted outline-none focus-gold c-cream mt-2 font-mono-t"
+          />
+          <button
+            disabled={busy}
+            onClick={createAccount}
+            className="w-full mt-2 px-4 py-2.5 rounded-xl font-bold text-xs disabled:opacity-50"
+            style={{ background: "#f2b705", color: "#0c0e16" }}
+          >
+            {busy ? "Creando cuenta…" : "Crear acceso y agregar"}
+          </button>
+        </>
+      ) : (
+        <button onClick={addNameOnly} className="w-full mt-2 px-4 py-2.5 rounded-xl font-bold text-xs" style={{ background: "#f2b705", color: "#0c0e16" }}>
+          Agregar nombre
+        </button>
+      )}
+
+      {feedback && (
+        <div className="text-[11px] mt-2 p-2 rounded-lg" style={{ background: feedback.ok ? "#052e12" : "#450a0a", color: feedback.ok ? "#4ade80" : "#f87171" }}>
+          {feedback.msg}
+        </div>
+      )}
     </div>
   );
 }
 
-function SettingsPanel({ catalog, onSave }) {
+function SettingsPanel({ catalog, onSave, isOwner }) {
   const [s, setS] = useState(catalog.settings);
   const [dirty, setDirty] = useState(false);
 
@@ -3363,11 +3424,11 @@ function SettingsPanel({ catalog, onSave }) {
       <div className="pt-4 mt-4" style={{ borderTop: "1px solid #232735" }}>
         <div className="font-display text-sm c-cream mb-1">Encargados</div>
         <div className="text-[11px] c-muted mb-3">
-          Nombres para mostrar en el reporte de ventas (pestaña "Ventas"), asociados al email con el que cada uno inicia sesión.
-          El usuario y la contraseña de acceso de cada encargado se crean aparte — pedíselo a quien te armó la app.
+          Creá acá la cuenta de acceso de cada encargado (con el email y la contraseña que va a usar para entrar al panel).
+          Se les asocia un nombre para que el reporte de "Ventas" los muestre con su nombre en vez del email.
         </div>
       </div>
-      <StaffEditor staff={s.staff || []} onChange={(v) => set("staff", v)} />
+      <StaffEditor staff={s.staff || []} onChange={(v) => set("staff", v)} isOwner={isOwner} />
 
       <button
         disabled={!dirty}
