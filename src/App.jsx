@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import {
   ShoppingBag, Plus, Minus, X, ChevronRight, Flame, MapPin,
   Check, Trash2, Pencil, LogOut, Lock, Save, PlusCircle,
-  Search, ArrowLeft, Utensils, Send, RefreshCw, Package, User, Timer
+  Search, ArrowLeft, Utensils, Send, RefreshCw, Package, User, Timer, TrendingUp
 } from "lucide-react";
 import { storage, getStorageInitError, authAvailable, adminSignIn, adminSignOut, getAdminSession, onAdminAuthChange, fileStorageAvailable, uploadMediaFile } from "./storage";
 
@@ -33,6 +33,7 @@ const DEFAULT_CATALOG = {
     heroSubtitle: "", // empty = use the featured item's description automatically
     heroDeliveryNote: "20-30 min demora",
     heroFeaturedItemId: "", // empty = auto-pick the first active item with a photo
+    staff: [], // [{ email, name }] — display names for the sales report; the actual login accounts are separate (Supabase Auth)
   },
   categories: [
     {
@@ -2095,6 +2096,14 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
 
   const authed = authAvailable ? !!session : pinAuthed;
 
+  // Who's logged in right now, resolved to a friendly name from
+  // catalog.settings.staff when one was configured for this email — used to
+  // attribute a sale to whoever marks the order "Entregado".
+  const currentStaffEmail = authAvailable ? (session?.user?.email || null) : (pinAuthed ? "pin" : null);
+  const currentStaffName = currentStaffEmail
+    ? ((catalog.settings.staff || []).find((s) => s.email === currentStaffEmail)?.name || currentStaffEmail)
+    : null;
+
   // Restore an existing login (e.g. after a page refresh) and keep it in
   // sync — Supabase persists the session in the browser on its own.
   useEffect(() => {
@@ -2160,6 +2169,18 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
   function openTab(id) {
     setTab(id);
     if (id === "orders") setUnseenCount(0);
+  }
+
+  // Attribute the sale to whoever is logged in at the moment an order is
+  // marked "Entregado" — that's the point a sale counts as closed. Other
+  // status changes (preparando/listo) don't touch servedBy, so the credit
+  // always reflects who actually closed it out, even if someone else
+  // started preparing it.
+  function handleUpdateOrder(id, patch) {
+    if (patch.status === "entregado" && currentStaffEmail) {
+      patch = { ...patch, servedBy: currentStaffEmail, servedByName: currentStaffName };
+    }
+    onUpdateOrder(id, patch);
   }
 
   if (checkingSession) {
@@ -2253,14 +2274,16 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
           <Utensils size={18} className="c-gold" />
           <span className="font-display text-lg">ADMIN · YO PANCHO</span>
         </div>
-        <button onClick={handleLogout} className="text-xs c-tan flex items-center gap-1">
+        <button onClick={handleLogout} className="text-xs c-tan flex items-center gap-2">
+          {currentStaffName && <span className="c-gold font-bold hidden sm:inline">{currentStaffName}</span>}
           <LogOut size={13} /> {authAvailable ? "Cerrar sesión" : "Salir"}
         </button>
       </div>
 
-      <div className="flex gap-2 px-5 py-3">
+      <div className="flex gap-2 px-5 py-3 overflow-x-auto no-scrollbar">
         {[
           { id: "orders", label: "Pedidos", icon: Package },
+          { id: "sales", label: "Ventas", icon: TrendingUp },
           { id: "menu", label: "Menú", icon: Utensils },
           { id: "promos", label: "Promos", icon: Flame },
           { id: "settings", label: "Configuración", icon: Pencil },
@@ -2268,7 +2291,7 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
           <button
             key={t.id}
             onClick={() => openTab(t.id)}
-            className="relative flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold"
+            className="relative shrink-0 flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold"
             style={{ background: tab === t.id ? "#f2b705" : "#171a24", color: tab === t.id ? "#0c0e16" : "#d1d5db" }}
           >
             <t.icon size={13} /> {t.label}
@@ -2285,11 +2308,122 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
       </div>
 
       <div className="px-5">
-        {tab === "orders" && <OrdersPanel orders={orders} onUpdateOrder={onUpdateOrder} onRefresh={onRefreshOrders} />}
+        {tab === "orders" && <OrdersPanel orders={orders} onUpdateOrder={handleUpdateOrder} onRefresh={onRefreshOrders} />}
+        {tab === "sales" && <SalesPanel orders={orders} />}
         {tab === "menu" && <MenuEditor catalog={catalog} onSave={onSaveCatalog} />}
         {tab === "promos" && <PromosPanel catalog={catalog} onSave={onSaveCatalog} />}
         {tab === "settings" && <SettingsPanel catalog={catalog} onSave={onSaveCatalog} />}
       </div>
+    </div>
+  );
+}
+
+function SalesPanel({ orders }) {
+  const [range, setRange] = useState("7d"); // "today" | "7d" | "30d" | "all"
+
+  const cutoff = (() => {
+    const now = new Date();
+    if (range === "today") { const d = new Date(now); d.setHours(0, 0, 0, 0); return d; }
+    if (range === "7d") return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    if (range === "30d") return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    return null; // "all"
+  })();
+
+  // A sale only counts once it's actually closed out ("Entregado") — a
+  // "Nuevo" or "Preparando" order isn't a completed sale yet.
+  const sold = orders.filter((o) => o.status === "entregado" && (!cutoff || new Date(o.createdAt) >= cutoff));
+
+  const totalRevenue = sold.reduce((s, o) => s + (o.total || 0), 0);
+
+  const byStaff = {};
+  for (const o of sold) {
+    const key = o.servedByName || o.servedBy || "Sin asignar";
+    if (!byStaff[key]) byStaff[key] = { name: key, revenue: 0, count: 0 };
+    byStaff[key].revenue += o.total || 0;
+    byStaff[key].count += 1;
+  }
+  const staffRows = Object.values(byStaff).sort((a, b) => b.revenue - a.revenue);
+
+  const byProduct = {};
+  for (const o of sold) {
+    for (const l of o.items || []) {
+      const key = l.name + (l.variantLabel ? ` (${l.variantLabel})` : "");
+      if (!byProduct[key]) byProduct[key] = { name: key, qty: 0, revenue: 0 };
+      byProduct[key].qty += l.qty;
+      byProduct[key].revenue += l.price * l.qty;
+    }
+  }
+  const productRows = Object.values(byProduct).sort((a, b) => b.qty - a.qty).slice(0, 10);
+  const maxProductQty = productRows[0]?.qty || 1;
+  const maxStaffRevenue = staffRows[0]?.revenue || 1;
+
+  return (
+    <div className="pb-10">
+      <div className="flex gap-1.5 mb-4 overflow-x-auto no-scrollbar">
+        {[
+          { id: "today", label: "Hoy" },
+          { id: "7d", label: "7 días" },
+          { id: "30d", label: "30 días" },
+          { id: "all", label: "Todo" },
+        ].map((r) => (
+          <button
+            key={r.id}
+            onClick={() => setRange(r.id)}
+            className="shrink-0 px-3.5 py-2 rounded-full text-xs font-bold"
+            style={{ background: range === r.id ? "#f2b705" : "#171a24", color: range === r.id ? "#0c0e16" : "#d1d5db" }}
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="rounded-2xl p-4 mb-4" style={{ background: "#11131b", border: "1px solid #171a24" }}>
+        <div className="text-[11px] c-tan">Total vendido (pedidos entregados)</div>
+        <div className="font-mono-t text-2xl font-bold c-gold mt-1">{money(totalRevenue)}</div>
+        <div className="text-[11px] c-muted mt-0.5">{sold.length} pedido{sold.length === 1 ? "" : "s"}</div>
+      </div>
+
+      <div className="font-display text-sm c-cream mb-2">Por encargado</div>
+      {staffRows.length === 0 ? (
+        <div className="text-xs c-muted mb-4">Todavía no hay pedidos entregados en este período.</div>
+      ) : (
+        <div className="space-y-2 mb-5">
+          {staffRows.map((row) => (
+            <div key={row.name} className="rounded-xl p-3" style={{ background: "#11131b", border: "1px solid #171a24" }}>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-bold c-cream">{row.name}</span>
+                <span className="font-mono-t text-xs font-bold c-gold">{money(row.revenue)}</span>
+              </div>
+              <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "#171a24" }}>
+                <div className="h-full rounded-full" style={{ width: `${(row.revenue / maxStaffRevenue) * 100}%`, background: "#f2b705" }} />
+              </div>
+              <div className="text-[10px] c-muted mt-1">{row.count} pedido{row.count === 1 ? "" : "s"}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="font-display text-sm c-cream mb-2">Productos más vendidos</div>
+      {productRows.length === 0 ? (
+        <div className="text-xs c-muted">Todavía no hay datos en este período.</div>
+      ) : (
+        <div className="space-y-2">
+          {productRows.map((row, i) => (
+            <div key={row.name} className="rounded-xl p-3" style={{ background: "#11131b", border: "1px solid #171a24" }}>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-bold c-cream">
+                  <span className="c-muted mr-1">#{i + 1}</span>{row.name}
+                </span>
+                <span className="font-mono-t text-xs font-bold c-gold">{row.qty}x</span>
+              </div>
+              <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "#171a24" }}>
+                <div className="h-full rounded-full" style={{ width: `${(row.qty / maxProductQty) * 100}%`, background: "#22c55e" }} />
+              </div>
+              <div className="text-[10px] c-muted mt-1">{money(row.revenue)} en total</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -2366,6 +2500,7 @@ function OrderCard({ order, onUpdateOrder }) {
               </div>
             )}
             {order.note && <div>📝 {order.note}</div>}
+            {order.status === "entregado" && order.servedByName && <div>✅ Entregado por: {order.servedByName}</div>}
           </div>
           <div className="flex gap-1.5 flex-wrap">
             {ORDER_STATUSES.map((s) => (
@@ -3098,6 +3233,61 @@ function PromosPanel({ catalog, onSave }) {
   );
 }
 
+function StaffEditor({ staff, onChange }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+
+  function add() {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = name.trim();
+    if (!cleanEmail || !cleanName) return;
+    const next = [...staff.filter((s) => s.email !== cleanEmail), { email: cleanEmail, name: cleanName }];
+    onChange(next);
+    setName("");
+    setEmail("");
+  }
+  function remove(email) {
+    onChange(staff.filter((s) => s.email !== email));
+  }
+
+  return (
+    <div>
+      {staff.length > 0 && (
+        <div className="space-y-1.5 mb-3">
+          {staff.map((s) => (
+            <div key={s.email} className="flex items-center justify-between px-3 py-2 rounded-xl" style={{ background: "#171a24" }}>
+              <div>
+                <div className="text-xs font-bold c-cream">{s.name}</div>
+                <div className="text-[10px] c-muted">{s.email}</div>
+              </div>
+              <button onClick={() => remove(s.email)} className="c-red">
+                <X size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Nombre (ej: Marisol)"
+          className="w-full bg-surface2 rounded-xl px-3.5 py-2.5 text-sm ph-muted outline-none focus-gold c-cream"
+        />
+        <input
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="Email con el que inicia sesión"
+          className="w-full bg-surface2 rounded-xl px-3.5 py-2.5 text-sm ph-muted outline-none focus-gold c-cream"
+        />
+        <button onClick={add} className="px-4 py-2.5 rounded-xl font-bold text-xs shrink-0" style={{ background: "#f2b705", color: "#0c0e16" }}>
+          Agregar
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SettingsPanel({ catalog, onSave }) {
   const [s, setS] = useState(catalog.settings);
   const [dirty, setDirty] = useState(false);
@@ -3169,6 +3359,15 @@ function SettingsPanel({ catalog, onSave }) {
       </div>
 
       <Field label="Nota de demora (ej: 20-30 min demora)" value={s.heroDeliveryNote} onChange={(v) => set("heroDeliveryNote", v)} />
+
+      <div className="pt-4 mt-4" style={{ borderTop: "1px solid #232735" }}>
+        <div className="font-display text-sm c-cream mb-1">Encargados</div>
+        <div className="text-[11px] c-muted mb-3">
+          Nombres para mostrar en el reporte de ventas (pestaña "Ventas"), asociados al email con el que cada uno inicia sesión.
+          El usuario y la contraseña de acceso de cada encargado se crean aparte — pedíselo a quien te armó la app.
+        </div>
+      </div>
+      <StaffEditor staff={s.staff || []} onChange={(v) => set("staff", v)} />
 
       <button
         disabled={!dirty}
