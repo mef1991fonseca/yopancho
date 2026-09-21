@@ -2627,7 +2627,7 @@ function MenuEditor({ catalog, onSave }) {
     const reader = new FileReader();
     reader.onload = () => {
       const img = new Image();
-      img.onload = () => {
+      img.onload = async () => {
         const MAX = 480;
         const scale = Math.min(1, MAX / Math.max(img.width, img.height));
         const w = Math.round(img.width * scale);
@@ -2637,8 +2637,28 @@ function MenuEditor({ catalog, onSave }) {
         canvas.height = h;
         const ctx = canvas.getContext("2d");
         ctx.drawImage(img, 0, 0, w, h);
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.75);
-        updateItemNow(catId, itemId, "image", dataUrl);
+
+        // Prefer uploading to Supabase Storage (a URL) over embedding the
+        // photo as base64 straight in the catalog: the catalog gets
+        // re-fetched by every visitor's browser every few seconds, so a
+        // handful of embedded photos would mean re-downloading megabytes of
+        // image data on every single poll, for everyone, whether they're
+        // looking at that item or not. A URL keeps the catalog itself tiny;
+        // the photo is fetched (and cached) only when actually shown.
+        if (fileStorageAvailable) {
+          canvas.toBlob(async (blob) => {
+            try {
+              const compressedFile = new File([blob], `${itemId}.jpg`, { type: "image/jpeg" });
+              const url = await uploadMediaFile(compressedFile, "items");
+              updateItemNow(catId, itemId, "image", url);
+            } catch (e) {
+              // Storage upload failed (offline, bucket misconfigured, etc.) — fall back to embedding it so the photo isn't just lost.
+              updateItemNow(catId, itemId, "image", canvas.toDataURL("image/jpeg", 0.75));
+            }
+          }, "image/jpeg", 0.75);
+        } else {
+          updateItemNow(catId, itemId, "image", canvas.toDataURL("image/jpeg", 0.75));
+        }
       };
       img.src = reader.result;
     };
@@ -3097,13 +3117,46 @@ function PromosPanel({ catalog, onSave }) {
     });
   }
 
+  // Same resize as compressImageToDataUrl, but returns a File — used before
+  // uploading to Supabase Storage so promo photos don't go up as raw,
+  // multi-megabyte phone camera captures (that bandwidth gets re-spent every
+  // time a visitor's browser loads the promo, not just once at upload time).
+  function compressImageToFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const MAXW = 1400, MAXH = 700;
+          const scale = Math.min(1, MAXW / img.width, MAXH / img.height);
+          const w = Math.round(img.width * scale);
+          const h = Math.round(img.height * scale);
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+          canvas.toBlob(
+            (blob) => resolve(blob ? new File([blob], (file.name || "promo").replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" }) : file),
+            "image/jpeg",
+            0.82
+          );
+        };
+        img.onerror = reject;
+        img.src = reader.result;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
   async function handleImageFile(id, file) {
     if (!file) return;
     setUploadError("");
     setUploadingId(id);
     try {
       if (fileStorageAvailable) {
-        const url = await uploadMediaFile(file, "promos");
+        const compressed = await compressImageToFile(file);
+        const url = await uploadMediaFile(compressed, "promos");
         await setPromoField(id, "image", url);
       } else {
         const dataUrl = await compressImageToDataUrl(file);
@@ -3118,8 +3171,8 @@ function PromosPanel({ catalog, onSave }) {
   async function handleVideoFile(id, file) {
     if (!file) return;
     if (!fileStorageAvailable) return;
-    if (file.size > 25 * 1024 * 1024) {
-      setUploadError("El video es muy pesado (máximo 25MB) — probá recortarlo o comprimirlo antes de subirlo.");
+    if (file.size > 12 * 1024 * 1024) {
+      setUploadError("El video es muy pesado (máximo 12MB) — probá recortarlo o comprimirlo antes de subirlo. Recordá que cada visita a la tienda lo vuelve a descargar.");
       return;
     }
     setUploadError("");
@@ -3187,6 +3240,12 @@ function PromosPanel({ catalog, onSave }) {
                 <button onClick={() => setPromoField(p.id, "video", null)} className="text-[11px] c-muted underline">Quitar video</button>
               )}
             </div>
+
+            {fileStorageAvailable && (
+              <div className="text-[10px] c-muted mt-1.5">
+                A diferencia de las fotos, el video no se comprime solo: subí clips cortos (10-15 seg) y livianos — cada visita a la tienda lo vuelve a descargar.
+              </div>
+            )}
 
             {(p.image || p.video) && (
               <label className="flex items-center gap-2 mt-2.5 text-[11px] c-tan cursor-pointer">
