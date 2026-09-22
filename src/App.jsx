@@ -541,7 +541,7 @@ export default function App() {
     const t = setInterval(async () => {
       const fresh = await loadCatalog();
       setCatalog(fresh);
-    }, 10000);
+    }, 30000);
     return () => clearInterval(t);
   }, [ready]);
 
@@ -732,7 +732,7 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
       const found = all.find((o) => o.id === myOrder.id);
       if (found) setMyOrder(found);
     };
-    const t = setInterval(poll, 5000);
+    const t = setInterval(poll, 15000);
     return () => clearInterval(t);
   }, [myOrder && myOrder.id]);
 
