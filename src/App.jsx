@@ -488,6 +488,17 @@ async function saveOrders(orders) {
   await storage.set("orders-list", JSON.stringify(orders));
 }
 
+// A lightweight, individually-keyed copy of one order — lets the customer's
+// live tracker fetch just their own order instead of the whole history.
+// Best-effort: if this fails for some reason, the order itself is still
+// safe (it already lived in orders-list via saveOrders), so callers don't
+// need to treat a failure here as fatal.
+async function saveOrderCopy(order) {
+  try {
+    await storage.set(`order:${order.id}`, JSON.stringify(order));
+  } catch (e) { /* non-fatal — tracker falls back to the full list */ }
+}
+
 // Sequential, per-day order numbers (resets every day) so numbers are
 // predictable and never collide — instead of the old random 4-digit code.
 async function getNextOrderNumber() {
@@ -522,9 +533,12 @@ export default function App() {
     }
     (async () => {
       try {
-        const [c, o] = await Promise.all([loadCatalog(), loadOrders()]);
+        // Orders are NOT loaded here on purpose: every visitor hitting this
+        // effect would otherwise download the entire order history just to
+        // render the shop, which never uses it. AdminView loads (and polls)
+        // orders itself, only once someone actually opens the admin panel.
+        const c = await loadCatalog();
         setCatalog(c);
-        setOrders(o);
         setReady(true);
       } catch (e) {
         console.error("[YoPancho] Error al conectar con la base de datos:", e);
@@ -554,6 +568,7 @@ export default function App() {
     const current = await loadOrders();
     const next = [order, ...current];
     await saveOrders(next);
+    saveOrderCopy(order); // don't block on this — see saveOrderCopy
     setOrders(next);
   }, []);
 
@@ -561,6 +576,8 @@ export default function App() {
     setOrders((prev) => {
       const next = prev.map((o) => (o.id === id ? { ...o, ...patch } : o));
       saveOrders(next);
+      const updated = next.find((o) => o.id === id);
+      if (updated) saveOrderCopy(updated); // keep the individual copy in sync too
       return next;
     });
   }, []);
@@ -728,6 +745,17 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
   useEffect(() => {
     if (!myOrder) return;
     const poll = async () => {
+      // Try the lightweight per-order copy first — fixed, tiny size no
+      // matter how much order history has piled up. Falls back to the full
+      // list only for orders placed before this existed, or if the
+      // individual copy failed to save for some reason.
+      try {
+        const res = await storage.get(`order:${myOrder.id}`);
+        if (res && res.value) {
+          setMyOrder(JSON.parse(res.value));
+          return;
+        }
+      } catch (e) { /* fall through to the full-list lookup below */ }
       const all = await loadOrders();
       const found = all.find((o) => o.id === myOrder.id);
       if (found) setMyOrder(found);
@@ -2141,6 +2169,7 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
 
   useEffect(() => {
     if (!authed) return;
+    onRefreshOrders(); // orders are no longer preloaded at the app level — fetch them now, immediately, instead of waiting for the first interval tick
     const t = setInterval(onRefreshOrders, 6000);
     return () => clearInterval(t);
   }, [authed, onRefreshOrders]);

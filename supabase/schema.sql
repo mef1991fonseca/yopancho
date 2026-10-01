@@ -34,11 +34,17 @@ create policy "kv_store_select_public" on kv_store
 -- ESCRITURA de pedidos y numeración: pública, porque el cliente crea su
 -- pedido sin loguearse. El panel admin (ya autenticado) también escribe acá
 -- para actualizar el estado del pedido (Nuevo → Preparando → Listo…).
+--
+-- Las claves "order:<id>" son una copia liviana de cada pedido individual
+-- (además de la lista completa en "orders-list"), para que el seguimiento
+-- en vivo del cliente pueda consultar solo SU pedido en vez de descargar el
+-- historial entero cada vez que sondea el estado — importante a partir de
+-- cierto volumen de pedidos acumulados.
 create policy "kv_store_write_orders" on kv_store
-  for insert with check (key in ('orders-list', 'order-counter'));
+  for insert with check (key in ('orders-list', 'order-counter') or key like 'order:%');
 
 create policy "kv_store_update_orders" on kv_store
-  for update using (key in ('orders-list', 'order-counter'));
+  for update using (key in ('orders-list', 'order-counter') or key like 'order:%');
 
 -- ESCRITURA del menú: SOLO administradores logueados. Antes de esto,
 -- cualquiera con la clave pública podía editar precios o el menú completo
