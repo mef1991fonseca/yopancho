@@ -1,0 +1,12 @@
+{
+  // Esto le dice a Cloudflare que sirva la carpeta "dist" (lo que genera
+  // "npm run build") como un sitio estático, en vez de esperar un Worker
+  // con código de servidor. Con esto, el comando "npx wrangler deploy" que
+  // Cloudflare ya tenía configurado por defecto funciona sin tocar nada más.
+  "name": "yopancho",
+  "compatibility_date": "2026-01-01",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}
