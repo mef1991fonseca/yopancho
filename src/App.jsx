@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import {
   ShoppingBag, Plus, Minus, X, ChevronRight, Flame, MapPin,
   Check, Trash2, Pencil, LogOut, Lock, Save, PlusCircle,
-  Search, ArrowLeft, Utensils, Send, RefreshCw, Package, User, Timer, TrendingUp
+  Search, ArrowLeft, Utensils, Send, RefreshCw, Package, User, Timer, TrendingUp, Download
 } from "lucide-react";
 import { storage, getStorageInitError, authAvailable, adminSignIn, adminSignOut, getAdminSession, onAdminAuthChange, fileStorageAvailable, uploadMediaFile, createStaffUser, ordersApi, argentinaDate } from "./storage";
 
@@ -302,6 +302,20 @@ const ORDER_STATUSES = [
   { id: "preparando", label: "Preparando", color: "#3b82f6" },
   { id: "listo", label: "Listo", color: "#22c55e" },
   { id: "entregado", label: "Entregado", color: "#6b7280" },
+];
+
+// "Cancelado" is kept apart from ORDER_STATUSES on purpose: those are the
+// steps of the normal flow (they drive the customer's progress tracker and
+// the status buttons), while a cancelled order is a dead end, not a step.
+// Orders are cancelled instead of deleted so there's always a record of what
+// happened and who did it.
+const CANCELLED_STATUS = { id: "cancelado", label: "Cancelado", color: "#dc2626" };
+const statusMeta = (id) => (id === "cancelado" ? CANCELLED_STATUS : ORDER_STATUSES.find((s) => s.id === id) || ORDER_STATUSES[0]);
+const CANCEL_REASONS = [
+  "Fuera de la zona de reparto",
+  "Sin stock de un producto",
+  "Cliente no responde",
+  "Pedido duplicado o de prueba",
 ];
 
 // Real product photos extracted from the menu flyers, keyed by item id.
@@ -1281,8 +1295,8 @@ function ShopView({ catalog, onGoAdmin }) {
             <Package size={16} className="c-gold" />
             Pedido #{myOrder.shortCode}
           </div>
-          <div className="text-xs font-bold px-2.5 py-1 rounded-full" style={{ background: (ORDER_STATUSES.find((s) => s.id === myOrder.status) || ORDER_STATUSES[0]).color, color: "#0c0e16" }}>
-            {(ORDER_STATUSES.find((s) => s.id === myOrder.status) || ORDER_STATUSES[0]).label}
+          <div className="text-xs font-bold px-2.5 py-1 rounded-full" style={{ background: statusMeta(myOrder.status).color, color: myOrder.status === "cancelado" ? "#ffffff" : "#0c0e16" }}>
+            {statusMeta(myOrder.status).label}
           </div>
         </button>
       )}
@@ -1321,7 +1335,7 @@ function ShopView({ catalog, onGoAdmin }) {
 
       {/* Live order tracker */}
       {trackerOpen && myOrder && (
-        <OrderTrackerModal order={myOrder} onClose={() => setTrackerOpen(false)} onStopTracking={() => { setTrackerOpen(false); setMyOrder(null); }} />
+        <OrderTrackerModal order={myOrder} contact={catalog.settings.phoneDisplay} onClose={() => setTrackerOpen(false)} onStopTracking={() => { setTrackerOpen(false); setMyOrder(null); }} />
       )}
 
       {/* Look up an order by number */}
@@ -1976,8 +1990,9 @@ function ConfirmModal({ order, onClose, onTrack }) {
   );
 }
 
-function OrderTrackerModal({ order, onClose, onStopTracking }) {
+function OrderTrackerModal({ order, contact, onClose, onStopTracking }) {
   const currentIdx = ORDER_STATUSES.findIndex((s) => s.id === order.status);
+  const cancelled = order.status === "cancelado";
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: "rgba(10,7,5,0.8)" }} onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-6" style={{ background: "#ffffff", color: "#0c0e16" }}>
@@ -1989,7 +2004,16 @@ function OrderTrackerModal({ order, onClose, onStopTracking }) {
         </div>
         <p className="text-xs c-muted2 mb-6">Se actualiza solo cada pocos segundos.</p>
 
-        <div className="mb-6">
+        {cancelled && (
+          <div className="p-4 rounded-xl mb-6" style={{ background: "#fef2f2", border: "1px solid #fecaca" }}>
+            <div className="font-bold text-sm mb-1" style={{ color: "#b91c1c" }}>Este pedido fue cancelado por el local</div>
+            <div className="text-xs" style={{ color: "#7f1d1d" }}>
+              Lamentablemente no pudimos tomarlo. Si tenés dudas, escribinos por WhatsApp{contact ? ` al ${contact}` : ""} y lo resolvemos.
+            </div>
+          </div>
+        )}
+
+        <div className="mb-6" style={cancelled ? { display: "none" } : undefined}>
           {ORDER_STATUSES.map((s, idx) => {
             const done = idx <= currentIdx;
             return (
@@ -2208,6 +2232,19 @@ function AdminView({ catalog, orders, ordersLoaded, ordersError, onSaveCatalog, 
   // status changes (preparando/listo) don't touch servedBy, so the credit
   // always reflects who actually closed it out, even if someone else
   // started preparing it.
+  function handleCancelOrder(order, reason) {
+    onUpdateOrder(order.id, {
+      status: "cancelado",
+      cancelReason: reason,
+      cancelledAt: new Date().toISOString(),
+      cancelledBy: currentStaffEmail,
+      cancelledByName: currentStaffName,
+    });
+  }
+  function handleReopenOrder(order) {
+    onUpdateOrder(order.id, { status: "nuevo", cancelReason: null, cancelledAt: null, cancelledBy: null, cancelledByName: null });
+  }
+
   function handleUpdateOrder(id, patch) {
     if (patch.status === "entregado" && currentStaffEmail) {
       patch = { ...patch, servedBy: currentStaffEmail, servedByName: currentStaffName };
@@ -2340,7 +2377,7 @@ function AdminView({ catalog, orders, ordersLoaded, ordersError, onSaveCatalog, 
       </div>
 
       <div className="px-5">
-        {tab === "orders" && <OrdersPanel orders={orders} ordersError={ordersError} onUpdateOrder={handleUpdateOrder} onRefresh={onRefreshOrders} />}
+        {tab === "orders" && <OrdersPanel orders={orders} ordersError={ordersError} onUpdateOrder={handleUpdateOrder} onCancelOrder={handleCancelOrder} onReopenOrder={handleReopenOrder} onRefresh={onRefreshOrders} />}
         {tab === "sales" && <SalesPanel orders={orders} />}
         {tab === "menu" && <MenuEditor catalog={catalog} onSave={onSaveCatalog} />}
         {tab === "promos" && <PromosPanel catalog={catalog} onSave={onSaveCatalog} />}
@@ -2379,11 +2416,24 @@ function localSalesReport(orders, fromISO) {
       byProduct[pk].revenue += l.price * l.qty;
     }
   }
+  const cancelledOrders = orders.filter((o) => o.status === "cancelado" && (!cutoff || new Date(o.createdAt) >= cutoff));
+  const byReason = {};
+  for (const o of cancelledOrders) {
+    const k = o.cancelReason || "Sin motivo";
+    byReason[k] = byReason[k] || { reason: k, count: 0, lost: 0 };
+    byReason[k].count += 1;
+    byReason[k].lost += o.total || 0;
+  }
   return {
     revenue: sold.reduce((s, o) => s + (o.total || 0), 0),
     count: sold.length,
     byStaff: Object.values(byStaff).sort((a, b) => b.revenue - a.revenue),
     topProducts: Object.values(byProduct).sort((a, b) => b.qty - a.qty).slice(0, 10),
+    cancelled: {
+      count: cancelledOrders.length,
+      lost: cancelledOrders.reduce((s, o) => s + (o.total || 0), 0),
+      reasons: Object.values(byReason).sort((a, b) => b.count - a.count),
+    },
   };
 }
 
@@ -2393,6 +2443,33 @@ function SalesPanel({ orders }) {
   const [loading, setLoading] = useState(ordersApi.mode === "db");
   const [loadError, setLoadError] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState(null); // { error: bool, text: string }
+
+  const RANGE_LABELS = { today: "Hoy", "7d": "Últimos 7 días", "30d": "Últimos 30 días", all: "Todo el historial" };
+  const RANGE_TAGS = { today: "hoy", "7d": "7dias", "30d": "30dias", all: "todo" };
+
+  // Builds an Excel with every order of the selected period (not just the
+  // 36 hours the orders board shows). Loaded on demand — see exportExcel.js.
+  async function exportExcel() {
+    setExporting(true);
+    setExportMsg(null);
+    try {
+      const rows = await ordersApi.exportOrders(salesRangeStart(range), null);
+      if (!rows.length) {
+        setExportMsg({ error: false, text: "No hay pedidos en este período para exportar." });
+        return;
+      }
+      const { downloadOrdersExcel } = await import("./exportExcel");
+      await downloadOrdersExcel(rows, { label: RANGE_LABELS[range], fileTag: RANGE_TAGS[range] });
+      setExportMsg({ error: false, text: `Listo: se descargó el Excel con ${rows.length} pedido${rows.length === 1 ? "" : "s"}.` });
+    } catch (e) {
+      console.error("[YoPancho] No se pudo exportar a Excel:", e);
+      setExportMsg({ error: true, text: "No se pudo generar el Excel. Revisá la conexión e intentá de nuevo." });
+    } finally {
+      setExporting(false);
+    }
+  }
 
   // With the real backend the totals are computed inside the database and
   // only the small result comes back — so this stays fast and cheap however
@@ -2411,11 +2488,12 @@ function SalesPanel({ orders }) {
   }, [range, reloadKey]);
 
   const report = ordersApi.mode === "db"
-    ? (dbReport || { revenue: 0, count: 0, byStaff: [], topProducts: [] })
+    ? (dbReport || { revenue: 0, count: 0, byStaff: [], topProducts: [], cancelled: { count: 0, lost: 0, reasons: [] } })
     : localSalesReport(orders, salesRangeStart(range));
 
   const totalRevenue = report.revenue || 0;
   const soldCount = report.count || 0;
+  const cancelled = report.cancelled || { count: 0, lost: 0, reasons: [] };
   const staffRows = report.byStaff || [];
   const productRows = report.topProducts || [];
   const maxProductQty = productRows[0]?.qty || 1;
@@ -2452,11 +2530,39 @@ function SalesPanel({ orders }) {
         </div>
       )}
 
-      <div className="rounded-2xl p-4 mb-4" style={{ background: "#11131b", border: "1px solid #171a24" }}>
+      <button
+        onClick={exportExcel}
+        disabled={exporting}
+        className="w-full mb-2 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 disabled:opacity-50"
+        style={{ background: "#171a24", color: "#f2b705", border: "1px solid #232735" }}
+      >
+        <Download size={14} /> {exporting ? "Preparando el Excel…" : `Exportar a Excel — ${RANGE_LABELS[range]}`}
+      </button>
+      {exportMsg && (
+        <div className="text-[11px] mb-3" style={{ color: exportMsg.error ? "#f87171" : "#9ca3af" }}>{exportMsg.text}</div>
+      )}
+
+      <div className="rounded-2xl p-4 mb-4 mt-3" style={{ background: "#11131b", border: "1px solid #171a24" }}>
         <div className="text-[11px] c-tan">Total vendido (pedidos entregados)</div>
         <div className="font-mono-t text-2xl font-bold c-gold mt-1">{money(totalRevenue)}</div>
         <div className="text-[11px] c-muted mt-0.5">{soldCount} pedido{soldCount === 1 ? "" : "s"}</div>
       </div>
+
+      {cancelled.count > 0 && (
+        <div className="rounded-2xl p-4 mb-4" style={{ background: "#11131b", border: "1px solid #450a0a" }}>
+          <div className="text-[11px]" style={{ color: "#f87171" }}>Pedidos cancelados</div>
+          <div className="font-mono-t text-lg font-bold mt-1" style={{ color: "#f87171" }}>
+            {cancelled.count} <span className="text-xs c-muted font-normal">· {money(cancelled.lost)} no concretados</span>
+          </div>
+          <div className="mt-2 space-y-1">
+            {cancelled.reasons.map((r) => (
+              <div key={r.reason} className="flex justify-between text-[11px] c-tan">
+                <span>{r.reason}</span><span className="font-mono-t">{r.count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="font-display text-sm c-cream mb-2">Por encargado</div>
       {staffRows.length === 0 ? (
@@ -2503,9 +2609,13 @@ function SalesPanel({ orders }) {
   );
 }
 
-function OrdersPanel({ orders, ordersError, onUpdateOrder, onRefresh }) {
+function OrdersPanel({ orders, ordersError, onUpdateOrder, onCancelOrder, onReopenOrder, onRefresh }) {
   const [filter, setFilter] = useState("todos");
-  const visible = filter === "todos" ? orders : orders.filter((o) => o.status === filter);
+  const [cancelTarget, setCancelTarget] = useState(null);
+  // "Todos" is the working board: cancelled orders live under their own filter
+  // so they stop cluttering the screen but are never lost.
+  const cancelledCount = orders.filter((o) => o.status === "cancelado").length;
+  const visible = filter === "todos" ? orders.filter((o) => o.status !== "cancelado") : orders.filter((o) => o.status === filter);
 
   return (
     <div>
@@ -2515,6 +2625,9 @@ function OrdersPanel({ orders, ordersError, onUpdateOrder, onRefresh }) {
           {ORDER_STATUSES.map((s) => (
             <button key={s.id} onClick={() => setFilter(s.id)} className="shrink-0 px-3 py-1.5 rounded-full text-[11px] font-bold" style={{ background: filter === s.id ? s.color : "#171a24", color: filter === s.id ? "#0c0e16" : "#d1d5db" }}>{s.label}</button>
           ))}
+          <button onClick={() => setFilter("cancelado")} className="shrink-0 px-3 py-1.5 rounded-full text-[11px] font-bold" style={{ background: filter === "cancelado" ? CANCELLED_STATUS.color : "#171a24", color: filter === "cancelado" ? "#ffffff" : "#d1d5db" }}>
+            Cancelados{cancelledCount > 0 ? ` (${cancelledCount})` : ""}
+          </button>
         </div>
         <button onClick={onRefresh} className="shrink-0 ml-2 w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#171a24" }}>
           <RefreshCw size={13} className="c-tan" />
@@ -2537,17 +2650,71 @@ function OrdersPanel({ orders, ordersError, onUpdateOrder, onRefresh }) {
       ) : (
         <div className="space-y-3">
           {visible.map((o) => (
-            <OrderCard key={o.id} order={o} onUpdateOrder={onUpdateOrder} />
+            <OrderCard key={o.id} order={o} onUpdateOrder={onUpdateOrder} onAskCancel={setCancelTarget} onReopen={onReopenOrder} />
           ))}
         </div>
+      )}
+
+      {cancelTarget && (
+        <CancelOrderModal
+          order={cancelTarget}
+          onClose={() => setCancelTarget(null)}
+          onConfirm={(reason) => { onCancelOrder(cancelTarget, reason); setCancelTarget(null); }}
+        />
       )}
     </div>
   );
 }
 
-function OrderCard({ order, onUpdateOrder }) {
+// Asks WHY before cancelling (one tap on a common reason, or write one), so a
+// mistaken tap doesn't cancel an order and the reason is on record.
+function CancelOrderModal({ order, onClose, onConfirm }) {
+  const [reason, setReason] = useState("");
+  const [other, setOther] = useState("");
+  const finalReason = reason === "__other" ? other.trim() : reason;
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: "rgba(5,6,10,0.85)" }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5" style={{ background: "#11131b" }}>
+        <h3 className="font-display text-lg c-cream mb-1">Cancelar pedido #{order.shortCode}</h3>
+        <p className="text-xs c-muted mb-4">El pedido sale de la lista pero queda guardado, con el motivo. ¿Por qué se cancela?</p>
+        <div className="space-y-2 mb-3">
+          {[...CANCEL_REASONS, "__other"].map((r) => (
+            <button
+              key={r}
+              onClick={() => setReason(r)}
+              className="w-full text-left px-3.5 py-2.5 rounded-xl text-sm font-bold"
+              style={{ background: reason === r ? "#f2b705" : "#171a24", color: reason === r ? "#0c0e16" : "#d1d5db" }}
+            >
+              {r === "__other" ? "Otro motivo…" : r}
+            </button>
+          ))}
+        </div>
+        {reason === "__other" && (
+          <input
+            autoFocus
+            value={other}
+            onChange={(e) => setOther(e.target.value)}
+            placeholder="Escribí el motivo"
+            className="w-full bg-surface2 rounded-xl px-3.5 py-2.5 text-sm ph-muted outline-none focus-gold c-cream mb-3"
+          />
+        )}
+        <button
+          disabled={!finalReason}
+          onClick={() => onConfirm(finalReason)}
+          className="w-full py-3 rounded-xl font-display text-sm disabled:opacity-40"
+          style={{ background: "#dc2626", color: "#ffffff" }}
+        >
+          Cancelar este pedido
+        </button>
+        <button onClick={onClose} className="w-full py-2.5 text-xs c-muted mt-1">Volver, no cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+function OrderCard({ order, onUpdateOrder, onAskCancel, onReopen }) {
   const [open, setOpen] = useState(false);
-  const status = ORDER_STATUSES.find((s) => s.id === order.status) || ORDER_STATUSES[0];
+  const status = statusMeta(order.status);
   const time = new Date(order.createdAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
 
   return (
@@ -2556,7 +2723,7 @@ function OrderCard({ order, onUpdateOrder }) {
         <div>
           <div className="flex items-center gap-2">
             <span className="font-mono-t font-bold text-sm">#{order.shortCode}</span>
-            <span className="text-[10px] px-2 py-0.5 rounded-full font-bold" style={{ background: status.color, color: "#0c0e16" }}>{status.label}</span>
+            <span className="text-[10px] px-2 py-0.5 rounded-full font-bold" style={{ background: status.color, color: order.status === "cancelado" ? "#ffffff" : "#0c0e16" }}>{status.label}</span>
           </div>
           <div className="text-xs c-tan mt-1">{order.customerName} · {time} · {order.mode === "delivery" ? "Delivery" : "Retiro"}</div>
         </div>
@@ -2588,18 +2755,43 @@ function OrderCard({ order, onUpdateOrder }) {
             {order.note && <div>📝 {order.note}</div>}
             {order.status === "entregado" && order.servedByName && <div>✅ Entregado por: {order.servedByName}</div>}
           </div>
-          <div className="flex gap-1.5 flex-wrap">
-            {ORDER_STATUSES.map((s) => (
-              <button
-                key={s.id}
-                onClick={() => onUpdateOrder(order.id, { status: s.id })}
-                className="px-2.5 py-1.5 rounded-lg font-bold"
-                style={{ background: order.status === s.id ? s.color : "#171a24", color: order.status === s.id ? "#0c0e16" : "#d1d5db" }}
-              >
-                {s.label}
+
+          {order.status === "cancelado" ? (
+            <div>
+              <div className="p-3 rounded-xl mb-2" style={{ background: "#450a0a", color: "#fca5a5" }}>
+                <div className="font-bold">Pedido cancelado</div>
+                <div>Motivo: {order.cancelReason || "sin motivo"}</div>
+                {order.cancelledByName && <div>Lo canceló: {order.cancelledByName}</div>}
+              </div>
+              <button onClick={() => onReopen(order)} className="px-2.5 py-1.5 rounded-lg font-bold" style={{ background: "#171a24", color: "#d1d5db" }}>
+                Reactivar pedido
               </button>
-            ))}
-          </div>
+            </div>
+          ) : (
+            <div>
+              <div className="flex gap-1.5 flex-wrap">
+                {ORDER_STATUSES.map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => onUpdateOrder(order.id, { status: s.id })}
+                    className="px-2.5 py-1.5 rounded-lg font-bold"
+                    style={{ background: order.status === s.id ? s.color : "#171a24", color: order.status === s.id ? "#0c0e16" : "#d1d5db" }}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+              {order.status !== "entregado" && (
+                <button
+                  onClick={() => onAskCancel(order)}
+                  className="mt-3 px-2.5 py-1.5 rounded-lg font-bold"
+                  style={{ background: "transparent", color: "#f87171", border: "1px solid #7f1d1d" }}
+                >
+                  Cancelar pedido
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -3583,6 +3775,85 @@ function SettingsPanel({ catalog, onSave, isOwner }) {
       >
         <Save size={15} /> Guardar configuración
       </button>
+
+      <BackupPanel catalog={catalog} />
+    </div>
+  );
+}
+
+// Offline copies of the two things that would hurt to lose: the order
+// history (as an Excel) and the menu (as a file that can restore it). The
+// free database plan has no automatic backups, so this is the safety net —
+// and the Excel doubles as an accounting export.
+function BackupPanel({ catalog }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [last, setLast] = useState(() => {
+    try { return localStorage.getItem("yopancho:last-backup"); } catch { return null; }
+  });
+  const days = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : null;
+  const stale = days === null || days >= 7;
+
+  async function backupOrders() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const rows = await ordersApi.exportOrders(null, null);
+      if (!rows.length) { setMsg({ error: false, text: "Todavía no hay pedidos para guardar." }); return; }
+      const { downloadOrdersExcel } = await import("./exportExcel");
+      await downloadOrdersExcel(rows, { label: "Copia de seguridad completa", fileTag: "copia-completa" });
+      const now = new Date().toISOString();
+      try { localStorage.setItem("yopancho:last-backup", now); } catch { /* private mode: just skip the reminder */ }
+      setLast(now);
+      setMsg({ error: false, text: `Listo: ${rows.length} pedido${rows.length === 1 ? "" : "s"} guardados en el Excel. Guardalo en tu Drive o mandalo por mail.` });
+    } catch (e) {
+      console.error("[YoPancho] No se pudo hacer la copia de seguridad:", e);
+      setMsg({ error: true, text: "No se pudo generar la copia. Revisá la conexión e intentá de nuevo." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function backupMenu() {
+    const { downloadMenuBackup } = await import("./exportExcel");
+    downloadMenuBackup(catalog);
+    setMsg({ error: false, text: "Listo: se descargó el respaldo del menú. Guardalo junto con el Excel." });
+  }
+
+  return (
+    <div className="pt-4 mt-4" style={{ borderTop: "1px solid #232735" }}>
+      <div className="font-display text-sm c-cream mb-1">Copia de seguridad</div>
+      <div className="text-[11px] c-muted mb-3">
+        La base de datos gratuita no hace copias automáticas. Descargá una copia al cerrar cada día (o al menos una vez por semana)
+        y guardala fuera del sistema: en tu Drive, por mail, en una compu.
+      </div>
+      <div
+        className="text-[11px] font-bold px-3 py-2 rounded-xl mb-3"
+        style={{ background: stale ? "#422006" : "#052e12", color: stale ? "#fbbf24" : "#4ade80" }}
+      >
+        {last === null
+          ? "⚠️ Todavía no descargaste ninguna copia desde este dispositivo."
+          : days === 0 ? "✅ Última copia de pedidos: hoy."
+          : `${stale ? "⚠️" : "✅"} Última copia de pedidos desde este dispositivo: hace ${days} día${days === 1 ? "" : "s"}.`}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <button
+          onClick={backupOrders}
+          disabled={busy}
+          className="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 disabled:opacity-50"
+          style={{ background: "#f2b705", color: "#0c0e16" }}
+        >
+          <Download size={14} /> {busy ? "Preparando…" : "Descargar pedidos (Excel)"}
+        </button>
+        <button
+          onClick={backupMenu}
+          className="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2"
+          style={{ background: "#171a24", color: "#d1d5db", border: "1px solid #232735" }}
+        >
+          <Download size={14} /> Descargar menú (respaldo)
+        </button>
+      </div>
+      {msg && <div className="text-[11px] mt-2" style={{ color: msg.error ? "#f87171" : "#9ca3af" }}>{msg.text}</div>}
     </div>
   );
 }

@@ -292,6 +292,20 @@ export const ordersApi = {
     return (await lsLoadOrders()).find((o) => o.shortCode === n && clean(o.phone) === clean(phone)) || null;
   },
 
+  // Every order in a period, complete — for the Excel export / backup.
+  // Staff only (the database refuses this to anyone not logged in).
+  async exportOrders(fromISO, toISO) {
+    if (supabase) {
+      const rows = await rpc("export_orders", { p_from: fromISO || null, p_to: toISO || null });
+      return Array.isArray(rows) ? rows : [];
+    }
+    const from = fromISO ? new Date(fromISO) : null;
+    const to = toISO ? new Date(toISO) : null;
+    return (await lsLoadOrders())
+      .filter((o) => (!from || new Date(o.createdAt) >= from) && (!to || new Date(o.createdAt) < to))
+      .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  },
+
   // Totals computed inside the database. Returns null in local mode — the
   // caller then works it out from the local list.
   async salesReport(fromISO) {
