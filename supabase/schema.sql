@@ -189,7 +189,7 @@ create or replace function public.update_order(p_id text, p_patch jsonb) returns
 language plpgsql security invoker set search_path = public as $fn$
 declare v jsonb;
 begin
-  if p_patch ? 'status' and (p_patch->>'status') not in ('nuevo', 'preparando', 'listo', 'entregado') then
+  if p_patch ? 'status' and (p_patch->>'status') not in ('nuevo', 'preparando', 'listo', 'entregado', 'cancelado') then
     raise exception 'Estado inválido';
   end if;
   update orders
@@ -202,7 +202,9 @@ end
 $fn$;
 
 -- Reporte de ventas calculado en la base: respuesta chica sin importar
--- cuántos pedidos haya acumulados.
+-- cuántos pedidos haya acumulados. Además de las ventas (pedidos Entregados)
+-- informa cuántos pedidos se cancelaron, cuánta plata no se concretó y por
+-- qué motivos.
 create or replace function public.sales_report(p_from timestamptz default null) returns jsonb
 language sql stable security invoker set search_path = public as $fn$
   with sold as (
@@ -225,13 +227,43 @@ language sql stable security invoker set search_path = public as $fn$
     group by 1
     order by 2 desc
     limit 10
+  ),
+  cancelled as (
+    select data from orders
+    where status = 'cancelado' and (p_from is null or created_at >= p_from)
+  ),
+  cancel_totals as (
+    select count(*) as n, coalesce(sum((data->>'total')::numeric), 0) as lost from cancelled
+  ),
+  cancel_reasons as (
+    select coalesce(nullif(data->>'cancelReason', ''), 'Sin motivo') as reason,
+           count(*) as n, sum((data->>'total')::numeric) as lost
+    from cancelled group by 1
   )
   select jsonb_build_object(
     'revenue', (select revenue from totals),
     'count',   (select n from totals),
     'byStaff', coalesce((select jsonb_agg(jsonb_build_object('name', name, 'revenue', revenue, 'count', n) order by revenue desc) from by_staff), '[]'::jsonb),
-    'topProducts', coalesce((select jsonb_agg(jsonb_build_object('name', name, 'qty', qty, 'revenue', revenue) order by qty desc) from by_product), '[]'::jsonb)
+    'topProducts', coalesce((select jsonb_agg(jsonb_build_object('name', name, 'qty', qty, 'revenue', revenue) order by qty desc) from by_product), '[]'::jsonb),
+    'cancelled', jsonb_build_object(
+      'count', (select n from cancel_totals),
+      'lost',  (select lost from cancel_totals),
+      'reasons', coalesce((select jsonb_agg(jsonb_build_object('reason', reason, 'count', n, 'lost', lost) order by n desc) from cancel_reasons), '[]'::jsonb)
+    )
   );
+$fn$;
+
+-- export_orders: todos los pedidos de un período, completos, para armar el
+-- Excel / la copia de seguridad. Solo personal logueado (respeta RLS).
+create or replace function public.export_orders(p_from timestamptz default null, p_to timestamptz default null) returns jsonb
+language sql stable security invoker set search_path = public as $fn$
+  select coalesce(jsonb_agg(o.data || jsonb_build_object('status', o.status) order by o.created_at), '[]'::jsonb)
+  from (
+    select data, status, created_at from orders
+    where (p_from is null or created_at >= p_from) and (p_to is null or created_at < p_to)
+    order by created_at
+    limit 50000
+  ) o;
 $fn$;
 
 -- Permisos: los clientes solo pueden crear y consultar su propio pedido;
@@ -242,6 +274,7 @@ revoke all on function public.lookup_order_public(integer, text)  from public, a
 revoke all on function public.admin_orders(timestamptz)           from public, anon, authenticated;
 revoke all on function public.update_order(text, jsonb)           from public, anon, authenticated;
 revoke all on function public.sales_report(timestamptz)           from public, anon, authenticated;
+revoke all on function public.export_orders(timestamptz, timestamptz) from public, anon, authenticated;
 
 grant execute on function public.place_order(jsonb)                 to anon, authenticated;
 grant execute on function public.get_order_public(text)             to anon, authenticated;
@@ -249,6 +282,7 @@ grant execute on function public.lookup_order_public(integer, text) to anon, aut
 grant execute on function public.admin_orders(timestamptz)          to authenticated;
 grant execute on function public.update_order(text, jsonb)          to authenticated;
 grant execute on function public.sales_report(timestamptz)          to authenticated;
+grant execute on function public.export_orders(timestamptz, timestamptz) to authenticated;
 
 -- Migración única de los pedidos que estaban en la lista vieja (idempotente).
 insert into public.orders (id, short_code, order_date, status, data, created_at, updated_at)
