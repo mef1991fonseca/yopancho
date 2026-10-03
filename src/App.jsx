@@ -4,7 +4,7 @@ import {
   Check, Trash2, Pencil, LogOut, Lock, Save, PlusCircle,
   Search, ArrowLeft, Utensils, Send, RefreshCw, Package, User, Timer, TrendingUp
 } from "lucide-react";
-import { storage, getStorageInitError, authAvailable, adminSignIn, adminSignOut, getAdminSession, onAdminAuthChange, fileStorageAvailable, uploadMediaFile, createStaffUser } from "./storage";
+import { storage, getStorageInitError, authAvailable, adminSignIn, adminSignOut, getAdminSession, onAdminAuthChange, fileStorageAvailable, uploadMediaFile, createStaffUser, ordersApi, argentinaDate } from "./storage";
 
 /* ------------------------------------------------------------------ */
 /*  DEFAULT CATALOG — seeded once into shared storage on first load    */
@@ -476,42 +476,12 @@ async function saveCatalog(catalog) {
   await storage.set("menu-catalog", JSON.stringify(catalog));
 }
 
-async function loadOrders() {
-  try {
-    const res = await storage.get("orders-list");
-    if (res && res.value) return JSON.parse(res.value);
-  } catch (e) { /* not found yet */ }
-  return [];
-}
-
-async function saveOrders(orders) {
-  await storage.set("orders-list", JSON.stringify(orders));
-}
-
-// A lightweight, individually-keyed copy of one order — lets the customer's
-// live tracker fetch just their own order instead of the whole history.
-// Best-effort: if this fails for some reason, the order itself is still
-// safe (it already lived in orders-list via saveOrders), so callers don't
-// need to treat a failure here as fatal.
-async function saveOrderCopy(order) {
-  try {
-    await storage.set(`order:${order.id}`, JSON.stringify(order));
-  } catch (e) { /* non-fatal — tracker falls back to the full list */ }
-}
-
-// Sequential, per-day order numbers (resets every day) so numbers are
-// predictable and never collide — instead of the old random 4-digit code.
-async function getNextOrderNumber() {
-  const today = new Date().toISOString().slice(0, 10);
-  let counter = { date: today, seq: 0 };
-  try {
-    const res = await storage.get("order-counter");
-    if (res && res.value) counter = JSON.parse(res.value);
-  } catch (e) { /* not found yet, use default */ }
-  if (counter.date !== today) counter = { date: today, seq: 0 };
-  counter.seq += 1;
-  await storage.set("order-counter", JSON.stringify(counter));
-  return counter.seq;
+// Folds a batch of changed orders into the list already on screen (by id),
+// newest first.
+function mergeOrders(prev, incoming) {
+  const byId = new Map(prev.map((o) => [o.id, o]));
+  incoming.forEach((o) => byId.set(o.id, { ...(byId.get(o.id) || {}), ...o }));
+  return Array.from(byId.values()).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 }
 
 /* ------------------------------------------------------------------ */
@@ -522,6 +492,9 @@ export default function App() {
   const [view, setView] = useState("shop"); // shop | admin
   const [catalog, setCatalog] = useState(null);
   const [orders, setOrders] = useState([]);
+  const [ordersLoaded, setOrdersLoaded] = useState(false); // true once the admin panel's first load finished
+  const [ordersError, setOrdersError] = useState(false);   // true while the last refresh failed (offline, expired session…)
+  const ordersCursor = useRef(null);                       // "only what changed since" marker for the admin poll
   const [ready, setReady] = useState(false);
   const [loadError, setLoadError] = useState(null);
 
@@ -559,28 +532,45 @@ export default function App() {
     return () => clearInterval(t);
   }, [ready]);
 
+  // Admin panel polling. The first call loads recent + still-open orders; every
+  // call after that only asks for what changed since the last one, so the
+  // 6-second refresh costs almost nothing no matter how much history exists.
   const refreshOrders = useCallback(async () => {
-    const o = await loadOrders();
-    setOrders(o);
+    try {
+      const { orders: incoming, cursor, full } = await ordersApi.listForAdmin(ordersCursor.current);
+      if (cursor) ordersCursor.current = cursor;
+      setOrders((prev) => (full ? incoming : mergeOrders(prev, incoming)));
+      setOrdersLoaded(true);
+      setOrdersError(false);
+    } catch (e) {
+      console.error("[YoPancho] No se pudieron actualizar los pedidos:", e);
+      setOrdersError(true);
+    }
   }, []);
 
-  const pushOrder = useCallback(async (order) => {
-    const current = await loadOrders();
-    const next = [order, ...current];
-    await saveOrders(next);
-    saveOrderCopy(order); // don't block on this — see saveOrderCopy
-    setOrders(next);
-  }, []);
-
+  // Changes ONE order in the database (atomically, without touching the
+  // others). The screen updates right away; if saving fails, it reloads the
+  // real state and tells the person instead of pretending it worked.
   const updateOrder = useCallback(async (id, patch) => {
-    setOrders((prev) => {
-      const next = prev.map((o) => (o.id === id ? { ...o, ...patch } : o));
-      saveOrders(next);
-      const updated = next.find((o) => o.id === id);
-      if (updated) saveOrderCopy(updated); // keep the individual copy in sync too
-      return next;
-    });
-  }, []);
+    setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, ...patch } : o)));
+    try {
+      const saved = await ordersApi.update(id, patch);
+      setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, ...saved } : o)));
+    } catch (e) {
+      console.error("[YoPancho] No se pudo guardar el cambio del pedido:", e);
+      ordersCursor.current = null;
+      await refreshOrders();
+      window.alert("No se pudo guardar el cambio del pedido. Revisá la conexión e intentá de nuevo.");
+    }
+  }, [refreshOrders]);
+
+  function exitAdmin() {
+    ordersCursor.current = null;
+    setOrders([]);
+    setOrdersLoaded(false);
+    setOrdersError(false);
+    setView("shop");
+  }
 
   const persistCatalog = useCallback(async (next) => {
     setCatalog(next);
@@ -659,15 +649,17 @@ export default function App() {
         style={{ background: "#0c0e16", boxShadow: "0 0 60px rgba(0,0,0,0.5)" }}
       >
         {view === "shop" ? (
-          <ShopView catalog={catalog} onGoAdmin={() => setView("admin")} pushOrder={pushOrder} />
+          <ShopView catalog={catalog} onGoAdmin={() => setView("admin")} />
         ) : (
           <AdminView
             catalog={catalog}
             orders={orders}
+            ordersLoaded={ordersLoaded}
+            ordersError={ordersError}
             onSaveCatalog={persistCatalog}
             onUpdateOrder={updateOrder}
             onRefreshOrders={refreshOrders}
-            onExit={() => setView("shop")}
+            onExit={exitAdmin}
           />
         )}
       </div>
@@ -679,7 +671,7 @@ export default function App() {
 /*  SHOP VIEW (CUSTOMER)                                                */
 /* ------------------------------------------------------------------ */
 
-function ShopView({ catalog, onGoAdmin, pushOrder }) {
+function ShopView({ catalog, onGoAdmin }) {
   const [activeCat, setActiveCat] = useState(catalog.categories[0].id);
   const [carouselIndex, setCarouselIndex] = useState(0);
   const [carouselPaused, setCarouselPaused] = useState(false);
@@ -744,21 +736,13 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
   // see it move from "Nuevo" to "Preparando" to "Listo" without asking the local.
   useEffect(() => {
     if (!myOrder) return;
+    // Asks the database for just THIS order's progress (a few hundred bytes,
+    // regardless of how many orders exist) and folds it into what we have.
     const poll = async () => {
-      // Try the lightweight per-order copy first — fixed, tiny size no
-      // matter how much order history has piled up. Falls back to the full
-      // list only for orders placed before this existed, or if the
-      // individual copy failed to save for some reason.
       try {
-        const res = await storage.get(`order:${myOrder.id}`);
-        if (res && res.value) {
-          setMyOrder(JSON.parse(res.value));
-          return;
-        }
-      } catch (e) { /* fall through to the full-list lookup below */ }
-      const all = await loadOrders();
-      const found = all.find((o) => o.id === myOrder.id);
-      if (found) setMyOrder(found);
+        const pub = await ordersApi.getPublic(myOrder.id);
+        if (pub) setMyOrder((prev) => (prev && prev.id === pub.id ? { ...prev, ...pub } : prev));
+      } catch (e) { /* momentary connection hiccup — the next tick tries again */ }
     };
     const t = setInterval(poll, 15000);
     return () => clearInterval(t);
@@ -802,10 +786,12 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
   }
 
   async function handleOrderSubmit(form) {
-    const shortCode = await getNextOrderNumber();
-    const order = {
+    // The database assigns the order number, status and timestamp in one
+    // atomic step (so simultaneous orders can't collide). If this throws, the
+    // checkout form shows an error and NOTHING else happens — no WhatsApp
+    // window, no "order sent" confirmation for an order that wasn't saved.
+    const draft = {
       id: uid(),
-      shortCode,
       items: cart.map(({ lineId, ...rest }) => rest),
       total: cartTotal,
       customerName: form.name,
@@ -815,10 +801,8 @@ function ShopView({ catalog, onGoAdmin, pushOrder }) {
       address: form.mode === "delivery" ? form.address : "",
       gpsLink: form.mode === "delivery" ? (form.gpsLink || "") : "",
       note: form.note,
-      status: "nuevo",
-      createdAt: new Date().toISOString(),
     };
-    await pushOrder(order);
+    const order = await ordersApi.place(draft);
 
     const PAYMENT_LABELS = { efectivo: "Efectivo", transferencia: "Transferencia", tarjeta: "Tarjeta" };
     const lines = order.items
@@ -1838,11 +1822,20 @@ function CheckoutModal({ total, initialMode, onClose, onSubmit }) {
     );
   }
 
+  const [submitError, setSubmitError] = useState("");
+
   async function submit() {
     if (!canSubmit || sending) return;
     setSending(true);
-    await onSubmit({ mode, payment, name, phone, address, note, gpsLink });
-    setSending(false);
+    setSubmitError("");
+    try {
+      await onSubmit({ mode, payment, name, phone, address, note, gpsLink });
+    } catch (e) {
+      console.error("[YoPancho] No se pudo registrar el pedido:", e);
+      setSubmitError("No pudimos registrar tu pedido. Revisá tu conexión e intentá de nuevo — no se envió nada.");
+    } finally {
+      setSending(false);
+    }
   }
 
   return (
@@ -1940,6 +1933,9 @@ function CheckoutModal({ total, initialMode, onClose, onSubmit }) {
         >
           <Send size={16} /> {sending ? "Enviando…" : "Enviar pedido por WhatsApp"}
         </button>
+        {submitError && (
+          <p className="text-xs text-center mt-3 font-bold" style={{ color: "#f87171" }}>{submitError}</p>
+        )}
         <p className="text-[11px] c-muted text-center mt-3">Vas a confirmar el pedido por WhatsApp con el local.</p>
       </div>
     </div>
@@ -2041,10 +2037,14 @@ function OrderLookupModal({ onClose, onFound }) {
     }
     setSearching(true);
     setError("");
-    const all = await loadOrders();
-    const found = all.find(
-      (o) => String(o.shortCode) === code.trim() && o.phone.replace(/\s+/g, "") === phone.trim().replace(/\s+/g, "")
-    );
+    let found = null;
+    try {
+      found = await ordersApi.lookup(code, phone);
+    } catch (e) {
+      setSearching(false);
+      setError("No pudimos consultar el pedido. Revisá tu conexión e intentá de nuevo.");
+      return;
+    }
     setSearching(false);
     if (!found) {
       setError("No encontramos un pedido con ese número y teléfono. Revisá los datos.");
@@ -2107,7 +2107,7 @@ function playAlertBeep() {
   } catch (e) { /* audio not available */ }
 }
 
-function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrders, onExit }) {
+function AdminView({ catalog, orders, ordersLoaded, ordersError, onSaveCatalog, onUpdateOrder, onRefreshOrders, onExit }) {
   const [session, setSession] = useState(null); // Supabase session, when auth is available
   const [pinAuthed, setPinAuthed] = useState(false); // fallback when Supabase isn't configured
   const [checkingSession, setCheckingSession] = useState(authAvailable);
@@ -2174,12 +2174,15 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
     return () => clearInterval(t);
   }, [authed, onRefreshOrders]);
 
-  // Seed "already seen" orders right when logging in, so old orders don't trigger an alert.
+  // Mark the orders that already exist as "seen" so only genuinely new ones
+  // trigger the alarm. This has to wait for the FIRST LOAD to finish
+  // (ordersLoaded): orders arrive a moment after login, and seeding before
+  // that would treat the entire existing history as brand new and ring.
   useEffect(() => {
-    if (authed && seenIdsRef.current === null) {
+    if (authed && ordersLoaded && seenIdsRef.current === null) {
       seenIdsRef.current = new Set(orders.map((o) => o.id));
     }
-  }, [authed, orders]);
+  }, [authed, ordersLoaded, orders]);
 
   // Detect brand-new orders arriving from the shared storage poll and alert.
   useEffect(() => {
@@ -2337,7 +2340,7 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
       </div>
 
       <div className="px-5">
-        {tab === "orders" && <OrdersPanel orders={orders} onUpdateOrder={handleUpdateOrder} onRefresh={onRefreshOrders} />}
+        {tab === "orders" && <OrdersPanel orders={orders} ordersError={ordersError} onUpdateOrder={handleUpdateOrder} onRefresh={onRefreshOrders} />}
         {tab === "sales" && <SalesPanel orders={orders} />}
         {tab === "menu" && <MenuEditor catalog={catalog} onSave={onSaveCatalog} />}
         {tab === "promos" && <PromosPanel catalog={catalog} onSave={onSaveCatalog} />}
@@ -2347,42 +2350,74 @@ function AdminView({ catalog, orders, onSaveCatalog, onUpdateOrder, onRefreshOrd
   );
 }
 
-function SalesPanel({ orders }) {
-  const [range, setRange] = useState("7d"); // "today" | "7d" | "30d" | "all"
+// Start of the selected period as an ISO timestamp (null = no lower bound).
+// "Hoy" starts at midnight Argentina time, not the device's time zone.
+function salesRangeStart(range) {
+  const now = new Date();
+  if (range === "today") return new Date(`${argentinaDate(now)}T00:00:00-03:00`).toISOString();
+  if (range === "7d") return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  if (range === "30d") return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  return null;
+}
 
-  const cutoff = (() => {
-    const now = new Date();
-    if (range === "today") { const d = new Date(now); d.setHours(0, 0, 0, 0); return d; }
-    if (range === "7d") return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    if (range === "30d") return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-    return null; // "all"
-  })();
-
-  // A sale only counts once it's actually closed out ("Entregado") — a
-  // "Nuevo" or "Preparando" order isn't a completed sale yet.
+// Same totals the database computes, but worked out from a local list — only
+// used in local/demo mode (no Supabase), where the whole list is already here.
+function localSalesReport(orders, fromISO) {
+  const cutoff = fromISO ? new Date(fromISO) : null;
   const sold = orders.filter((o) => o.status === "entregado" && (!cutoff || new Date(o.createdAt) >= cutoff));
-
-  const totalRevenue = sold.reduce((s, o) => s + (o.total || 0), 0);
-
   const byStaff = {};
-  for (const o of sold) {
-    const key = o.servedByName || o.servedBy || "Sin asignar";
-    if (!byStaff[key]) byStaff[key] = { name: key, revenue: 0, count: 0 };
-    byStaff[key].revenue += o.total || 0;
-    byStaff[key].count += 1;
-  }
-  const staffRows = Object.values(byStaff).sort((a, b) => b.revenue - a.revenue);
-
   const byProduct = {};
   for (const o of sold) {
+    const key = o.servedByName || o.servedBy || "Sin asignar";
+    byStaff[key] = byStaff[key] || { name: key, revenue: 0, count: 0 };
+    byStaff[key].revenue += o.total || 0;
+    byStaff[key].count += 1;
     for (const l of o.items || []) {
-      const key = l.name + (l.variantLabel ? ` (${l.variantLabel})` : "");
-      if (!byProduct[key]) byProduct[key] = { name: key, qty: 0, revenue: 0 };
-      byProduct[key].qty += l.qty;
-      byProduct[key].revenue += l.price * l.qty;
+      const pk = l.name + (l.variantLabel ? ` (${l.variantLabel})` : "");
+      byProduct[pk] = byProduct[pk] || { name: pk, qty: 0, revenue: 0 };
+      byProduct[pk].qty += l.qty;
+      byProduct[pk].revenue += l.price * l.qty;
     }
   }
-  const productRows = Object.values(byProduct).sort((a, b) => b.qty - a.qty).slice(0, 10);
+  return {
+    revenue: sold.reduce((s, o) => s + (o.total || 0), 0),
+    count: sold.length,
+    byStaff: Object.values(byStaff).sort((a, b) => b.revenue - a.revenue),
+    topProducts: Object.values(byProduct).sort((a, b) => b.qty - a.qty).slice(0, 10),
+  };
+}
+
+function SalesPanel({ orders }) {
+  const [range, setRange] = useState("7d"); // "today" | "7d" | "30d" | "all"
+  const [dbReport, setDbReport] = useState(null);
+  const [loading, setLoading] = useState(ordersApi.mode === "db");
+  const [loadError, setLoadError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  // With the real backend the totals are computed inside the database and
+  // only the small result comes back — so this stays fast and cheap however
+  // many orders have piled up. A sale only counts once it's closed out
+  // ("Entregado"): a "Nuevo" or "Preparando" order isn't a completed sale.
+  useEffect(() => {
+    if (ordersApi.mode !== "db") return;
+    let active = true;
+    setLoading(true);
+    setLoadError(false);
+    ordersApi.salesReport(salesRangeStart(range))
+      .then((r) => { if (active) setDbReport(r); })
+      .catch((e) => { console.error("[YoPancho] No se pudo cargar el reporte de ventas:", e); if (active) setLoadError(true); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [range, reloadKey]);
+
+  const report = ordersApi.mode === "db"
+    ? (dbReport || { revenue: 0, count: 0, byStaff: [], topProducts: [] })
+    : localSalesReport(orders, salesRangeStart(range));
+
+  const totalRevenue = report.revenue || 0;
+  const soldCount = report.count || 0;
+  const staffRows = report.byStaff || [];
+  const productRows = report.topProducts || [];
   const maxProductQty = productRows[0]?.qty || 1;
   const maxStaffRevenue = staffRows[0]?.revenue || 1;
 
@@ -2406,10 +2441,21 @@ function SalesPanel({ orders }) {
         ))}
       </div>
 
+      {ordersApi.mode === "db" && (
+        <div className="flex items-center justify-between mb-3 text-[10px]">
+          <span style={{ color: loadError ? "#f87171" : "#6b7280" }}>
+            {loadError ? "No se pudo cargar el reporte. Revisá la conexión." : loading ? "Calculando…" : "Datos actualizados al abrir esta pestaña."}
+          </span>
+          <button onClick={() => setReloadKey((k) => k + 1)} className="flex items-center gap-1 c-tan font-bold">
+            <RefreshCw size={11} /> Actualizar
+          </button>
+        </div>
+      )}
+
       <div className="rounded-2xl p-4 mb-4" style={{ background: "#11131b", border: "1px solid #171a24" }}>
         <div className="text-[11px] c-tan">Total vendido (pedidos entregados)</div>
         <div className="font-mono-t text-2xl font-bold c-gold mt-1">{money(totalRevenue)}</div>
-        <div className="text-[11px] c-muted mt-0.5">{sold.length} pedido{sold.length === 1 ? "" : "s"}</div>
+        <div className="text-[11px] c-muted mt-0.5">{soldCount} pedido{soldCount === 1 ? "" : "s"}</div>
       </div>
 
       <div className="font-display text-sm c-cream mb-2">Por encargado</div>
@@ -2457,7 +2503,7 @@ function SalesPanel({ orders }) {
   );
 }
 
-function OrdersPanel({ orders, onUpdateOrder, onRefresh }) {
+function OrdersPanel({ orders, ordersError, onUpdateOrder, onRefresh }) {
   const [filter, setFilter] = useState("todos");
   const visible = filter === "todos" ? orders : orders.filter((o) => o.status === filter);
 
@@ -2474,6 +2520,17 @@ function OrdersPanel({ orders, onUpdateOrder, onRefresh }) {
           <RefreshCw size={13} className="c-tan" />
         </button>
       </div>
+
+      {/* If the connection drops or the session expires, the list silently stops
+          updating — which at a busy counter means missing orders. Say so loudly. */}
+      {ordersError && (
+        <div className="text-[11px] font-bold px-3 py-2 rounded-xl mb-3" style={{ background: "#450a0a", color: "#f87171" }}>
+          ⚠️ Sin conexión con el servidor: los pedidos nuevos pueden no aparecer. Reintentando…
+        </div>
+      )}
+      {ordersApi.mode === "db" && (
+        <div className="text-[10px] c-muted mb-3">Se muestran los pedidos de las últimas 36 horas y los que siguen abiertos. El historial completo está en la pestaña Ventas.</div>
+      )}
 
       {visible.length === 0 ? (
         <div className="text-sm c-muted py-10 text-center">No hay pedidos {filter !== "todos" ? `en "${filter}"` : "todavía"}.</div>

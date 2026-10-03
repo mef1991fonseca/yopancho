@@ -196,3 +196,106 @@ export async function uploadMediaFile(file, folder = "promos") {
   const { data } = supabase.storage.from("media").getPublicUrl(path);
   return data.publicUrl;
 }
+
+/* ------------------------------------------------------------------ */
+/*  ORDERS                                                              */
+/* ------------------------------------------------------------------ */
+// Orders live in their own table (one row per order) when Supabase is
+// configured — see supabase/schema.sql. Every operation goes through a
+// database function, so:
+//   - two orders placed at the same instant can never overwrite each
+//     other or get the same number (the old approach rewrote one big JSON
+//     list on every save),
+//   - the admin panel only downloads what CHANGED since its last check,
+//     instead of the whole history every few seconds,
+//   - customers can only see their own order's status — never other
+//     customers' names, phones or addresses.
+// In localStorage mode (no Supabase, local demo) the same interface works
+// on a single local list; there's no concurrency to worry about there.
+
+// "YYYY-MM-DD" in Argentina time (UTC-3, no daylight saving).
+export function argentinaDate(d = new Date()) {
+  return d.toLocaleDateString("en-CA", { timeZone: "America/Argentina/Salta" });
+}
+
+const newId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+
+async function rpc(name, args) {
+  const { data, error } = await supabase.rpc(name, args);
+  if (error) throw error;
+  return data;
+}
+
+async function lsLoadOrders() {
+  const res = await localStorageImpl.get("orders-list");
+  if (!res || !res.value) return [];
+  try { return JSON.parse(res.value); } catch { return []; }
+}
+async function lsSaveOrders(list) {
+  await localStorageImpl.set("orders-list", JSON.stringify(list));
+}
+
+export const ordersApi = {
+  mode: supabase ? "db" : "local",
+
+  // Creates the order and assigns its number in one atomic step. The
+  // server decides the number, the status and the timestamp.
+  async place(draft) {
+    if (supabase) return rpc("place_order", { p_order: draft });
+    const today = argentinaDate();
+    let counter = { date: today, seq: 0 };
+    const raw = await localStorageImpl.get("order-counter");
+    if (raw && raw.value) { try { counter = JSON.parse(raw.value); } catch { /* start over */ } }
+    if (counter.date !== today) counter = { date: today, seq: 0 };
+    counter.seq += 1;
+    await localStorageImpl.set("order-counter", JSON.stringify(counter));
+    const order = { ...draft, id: draft.id || newId(), shortCode: counter.seq, status: "nuevo", createdAt: new Date().toISOString() };
+    await lsSaveOrders([order, ...(await lsLoadOrders())]);
+    return order;
+  },
+
+  // Admin panel: pass null the first time (recent + still-open orders), then
+  // the cursor from the previous call to get only what changed since.
+  async listForAdmin(since) {
+    if (supabase) {
+      const res = await rpc("admin_orders", { p_since: since || null });
+      return { orders: (res && res.orders) || [], cursor: (res && res.cursor) || null, full: !since };
+    }
+    return { orders: await lsLoadOrders(), cursor: null, full: true };
+  },
+
+  // Changes one order (status, who delivered it…) without touching the others.
+  async update(id, patch) {
+    if (supabase) {
+      const saved = await rpc("update_order", { p_id: id, p_patch: patch });
+      if (!saved) throw new Error("No se pudo guardar el cambio (¿venció la sesión?)");
+      return saved;
+    }
+    let saved = null;
+    const next = (await lsLoadOrders()).map((o) => (o.id === id ? (saved = { ...o, ...patch }) : o));
+    await lsSaveOrders(next);
+    return saved;
+  },
+
+  // Customer-facing: just the fields needed to show the order's progress.
+  async getPublic(id) {
+    if (supabase) return rpc("get_order_public", { p_id: id });
+    return (await lsLoadOrders()).find((o) => o.id === id) || null;
+  },
+
+  // Customer-facing lookup: order number + the phone used when ordering.
+  async lookup(code, phone) {
+    const n = parseInt(String(code).trim(), 10);
+    if (!Number.isFinite(n)) return null;
+    if (supabase) return rpc("lookup_order_public", { p_code: n, p_phone: phone });
+    const clean = (s) => String(s || "").replace(/\s+/g, "");
+    return (await lsLoadOrders()).find((o) => o.shortCode === n && clean(o.phone) === clean(phone)) || null;
+  },
+
+  // Totals computed inside the database. Returns null in local mode — the
+  // caller then works it out from the local list.
+  async salesReport(fromISO) {
+    if (!supabase) return null;
+    return rpc("sales_report", { p_from: fromISO || null });
+  },
+};
