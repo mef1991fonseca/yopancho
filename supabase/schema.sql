@@ -19,32 +19,19 @@ drop policy if exists "Escritura pública" on kv_store;
 drop policy if exists "Actualización pública" on kv_store;
 drop policy if exists "Borrado público" on kv_store;
 
--- LECTURA: pública para todo. La tienda necesita leer el menú sin login, y
--- el cliente necesita poder buscar su propio pedido por número + teléfono
--- sin loguearse. (Nota de privacidad: esto significa que, en teoría,
--- cualquiera con la clave pública del proyecto podría leer la lista
--- completa de pedidos —incluyendo nombre y teléfono de otros clientes—
--- directamente por API, no solo a través de la app. Achicar esto del todo
--- requeriría mover esa lectura detrás de una función propia del servidor;
--- queda anotado como una mejora de privacidad a futuro, no bloqueante para
--- este tamaño de proyecto.)
+-- LECTURA: pública (la tienda necesita leer el menú sin loguearse). Lo único
+-- que queda en esta tabla es el menú, que es público por naturaleza; los
+-- pedidos (con datos personales de clientes) viven aparte, en "orders".
 create policy "kv_store_select_public" on kv_store
   for select using (true);
 
--- ESCRITURA de pedidos y numeración: pública, porque el cliente crea su
--- pedido sin loguearse. El panel admin (ya autenticado) también escribe acá
--- para actualizar el estado del pedido (Nuevo → Preparando → Listo…).
---
--- Las claves "order:<id>" son una copia liviana de cada pedido individual
--- (además de la lista completa en "orders-list"), para que el seguimiento
--- en vivo del cliente pueda consultar solo SU pedido en vez de descargar el
--- historial entero cada vez que sondea el estado — importante a partir de
--- cierto volumen de pedidos acumulados.
-create policy "kv_store_write_orders" on kv_store
-  for insert with check (key in ('orders-list', 'order-counter') or key like 'order:%');
-
-create policy "kv_store_update_orders" on kv_store
-  for update using (key in ('orders-list', 'order-counter') or key like 'order:%');
+-- Los pedidos YA NO se guardan en kv_store: viven en la tabla "orders" (más
+-- abajo en este archivo) y los clientes solo acceden por funciones del
+-- servidor. Por eso acá no hay permisos de escritura públicos: un visitante
+-- sin login no puede escribir nada en kv_store. Si venís de una versión
+-- anterior que los tenía, estas dos líneas los quitan:
+drop policy if exists "kv_store_write_orders"  on kv_store;
+drop policy if exists "kv_store_update_orders" on kv_store;
 
 -- ESCRITURA del menú: SOLO administradores logueados. Antes de esto,
 -- cualquiera con la clave pública podía editar precios o el menú completo
@@ -109,7 +96,7 @@ create policy "orders_select_staff" on public.orders for select to authenticated
 create policy "orders_update_staff" on public.orders for update to authenticated using (true) with check (true);
 
 create or replace function public.orders_touch() returns trigger
-language plpgsql as $fn$
+language plpgsql set search_path = public as $fn$
 begin
   new.updated_at := now();
   return new;
