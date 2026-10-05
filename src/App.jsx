@@ -1543,7 +1543,27 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
   const [platoGuarnicion, setPlatoGuarnicion] = useState(null);
   const [proteinChoice, setProteinChoice] = useState(null);
   const [extraNote, setExtraNote] = useState("");
-  const price = variant ? variant.price : item.price;
+  // Pizzas por media: el local carga un "precio de la media" por producto desde
+  // el panel. Si está cargado, el cliente puede pedir entera, media, o mitad y
+  // mitad eligiendo el segundo gusto entre los que también tengan precio de
+  // media. Es independiente de "Dividir en 2" (que reparte aderezos, no gustos).
+  const halfPrice = Number(item.halfPrice) || 0;
+  const canHalf = halfPrice > 0 && !item.variants;
+  const [sizeMode, setSizeMode] = useState("entera"); // "entera" | "media" | "mitad"
+  const [secondHalfId, setSecondHalfId] = useState(null);
+
+  const halfCandidates = canHalf
+    ? (catalog.categories || []).flatMap((c) => c.items)
+        .filter((it) => it.active !== false && Number(it.halfPrice) > 0 && it.id !== item.id)
+    : [];
+  const secondHalf = halfCandidates.find((it) => it.id === secondHalfId) || null;
+
+  const basePrice = variant ? variant.price : item.price;
+  const price = !canHalf || sizeMode === "entera"
+    ? basePrice
+    : sizeMode === "media"
+      ? halfPrice
+      : halfPrice + (secondHalf ? Number(secondHalf.halfPrice) || 0 : 0);
 
   const activeGroups = (catalog.modifierGroups || []).filter((g) => (item.modifierGroupIds || []).includes(g.id));
   const canSplit = activeGroups.length > 0 && !item.requiresGuarnicion && item.allowSplit !== false;
@@ -1588,6 +1608,12 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
   }
   const modifierExtra = splitMode ? sumExtras(half1Selected) + sumExtras(half2Selected) : sumExtras(selectedByGroup);
 
+  const sizeNote = !canHalf || sizeMode === "entera"
+    ? ""
+    : sizeMode === "media"
+      ? "Media pizza"
+      : `Mitad y mitad: ${item.name} + ${secondHalf ? secondHalf.name : "?"}`;
+
   const note = splitMode
     ? [
         "Dividido en 2 mitades",
@@ -1598,13 +1624,15 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
         extraNote.trim(),
       ].filter(Boolean).join(" · ")
     : [
+        sizeNote,
         proteinChoice ? `Tipo: ${proteinChoice}` : "",
         groupsNote(selectedByGroup),
         platoGuarnicion ? `Guarnición: ${platoGuarnicion}` : "",
         extraNote.trim(),
       ].filter(Boolean).join(" · ");
 
-  const canAdd = (!item.requiresGuarnicion || !!platoGuarnicion) && (!item.proteinChoices || !!proteinChoice);
+  const canAdd = (!item.requiresGuarnicion || !!platoGuarnicion) && (!item.proteinChoices || !!proteinChoice)
+    && (!canHalf || sizeMode !== "mitad" || !!secondHalf);
   const photo = item.image || PRODUCT_IMAGES[item.id];
 
   return (
@@ -1681,6 +1709,54 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
           </div>
         )}
 
+        {canHalf && (
+          <div className="mb-4">
+            <div className="text-xs font-bold c-gold mb-2">🍕 ¿Cómo la querés?</div>
+            <div className="flex gap-2">
+              {[
+                { id: "entera", label: "Entera", sub: money(basePrice) },
+                { id: "media", label: "Media", sub: money(halfPrice) },
+                { id: "mitad", label: "Mitad y mitad", sub: "2 gustos" },
+              ].map((o) => (
+                <button
+                  key={o.id}
+                  onClick={() => setSizeMode(o.id)}
+                  className="flex-1 py-2 rounded-xl text-[11px] font-bold leading-tight"
+                  style={{ background: sizeMode === o.id ? "#f2b705" : "#171a24", color: sizeMode === o.id ? "#0c0e16" : "#d1d5db" }}
+                >
+                  {o.label}
+                  <span className="block font-mono-t text-[10px] opacity-75">{o.sub}</span>
+                </button>
+              ))}
+            </div>
+
+            {sizeMode === "mitad" && (
+              <div className="mt-3">
+                <div className="text-[11px] c-tan mb-1.5">
+                  Una mitad es <b>{item.name}</b>. Elegí la otra mitad:
+                </div>
+                {halfCandidates.length === 0 ? (
+                  <div className="text-[11px]" style={{ color: "#f87171" }}>
+                    No hay otras pizzas con precio de media cargado. Pedila entera o media.
+                  </div>
+                ) : (
+                  <div className="flex gap-1.5 flex-wrap max-h-32 overflow-y-auto pr-1">
+                    {halfCandidates.map((it) => (
+                      <button
+                        key={it.id}
+                        onClick={() => setSecondHalfId(it.id)}
+                        className={`chip px-3 py-1.5 rounded-full text-[11px] font-bold ${secondHalfId === it.id ? "active" : ""}`}
+                      >
+                        {it.name} <span className="font-mono-t opacity-75">{money(it.halfPrice)}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {canSplit && (
           <div className="mb-4">
             <div className="flex gap-2">
@@ -1749,7 +1825,13 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
           <p className="text-[11px] mb-2 text-center" style={{ color: "#dc2626" }}>Elegí el tipo (carne, pollo o cerdo) para poder agregar.</p>
         )}
         <button
-          onClick={() => canAdd && onAdd(item, variant, qty, note, modifierExtra)}
+          onClick={() => canAdd && onAdd(
+            item,
+            !canHalf || sizeMode === "entera"
+              ? variant
+              : { label: sizeMode === "media" ? "Media" : `Mitad y mitad con ${secondHalf ? secondHalf.name : ""}`, price },
+            qty, note, modifierExtra
+          )}
           disabled={!canAdd}
           className="w-full py-3.5 rounded-2xl font-display text-base flex items-center justify-center gap-2 disabled:opacity-40"
           style={{ background: "#f2b705", color: "#0c0e16" }}
@@ -3304,6 +3386,22 @@ function MenuEditor({ catalog, onSave }) {
                         type="number"
                         value={item.price}
                         onChange={(e) => updateItem(cat.id, item.id, "price", Number(e.target.value) || 0)}
+                        className="w-24 bg-dark rounded-lg px-2 py-1 text-xs font-mono-t outline-none"
+                      />
+                    </div>
+                  )}
+
+                  {!item.variants && (
+                    <div className="flex items-center gap-2 mt-2">
+                      <span className="text-[10px] c-muted flex-1">
+                        Precio de la media (pizzas)
+                        <span className="block c-brown">0 o vacío = no se ofrece media ni mitad y mitad</span>
+                      </span>
+                      <input
+                        type="number"
+                        value={item.halfPrice || ""}
+                        placeholder="0"
+                        onChange={(e) => updateItem(cat.id, item.id, "halfPrice", Number(e.target.value) || 0)}
                         className="w-24 bg-dark rounded-lg px-2 py-1 text-xs font-mono-t outline-none"
                       />
                     </div>
