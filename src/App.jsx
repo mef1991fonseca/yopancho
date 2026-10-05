@@ -289,11 +289,18 @@ const PROTEIN_CHOICES_BY_ITEM_ID = {
   "plato-costeleta": ["Carne", "Cerdo"],
 };
 
+// "Dividir en 2" (aderezos distintos en cada mitad) tiene sentido en los
+// sandwiches grandes, pero en hamburguesas, papuchas, panchos, pizzetas y
+// platos solo complica el armado. Por defecto se ofrece únicamente donde
+// sirve; cada producto se puede ajustar desde el panel (Menú → producto).
+const NO_SPLIT_CATEGORY_IDS = new Set(["hamb-paty", "smash", "veggie", "papuchas", "panchos", "pizzetas", "plato"]);
+
 DEFAULT_CATALOG.categories = DEFAULT_CATALOG.categories.map((c) => ({
   ...c,
   items: c.items.map((it) => ({
     ...it,
     modifierGroupIds: it.modifierGroupIds || CATEGORY_DEFAULT_MODIFIER_GROUPS[c.id] || [],
+    ...(NO_SPLIT_CATEGORY_IDS.has(c.id) && it.allowSplit === undefined ? { allowSplit: false } : {}),
   })),
 }));
 
@@ -422,11 +429,23 @@ function migrateCatalog(raw) {
     }
   }
 
+  // One-time default: turn "mitad y mitad" off where it only gets in the way.
+  // Guarded by a flag so that if someone later turns it back ON for a product
+  // from the panel, this never switches it off again.
+  const applySplitDefaults = !c._splitDefaultsApplied;
+  if (applySplitDefaults) {
+    c._splitDefaultsApplied = true;
+    changed = true;
+  }
+
   c.categories = (c.categories || []).map((cat) => ({
     ...cat,
     items: cat.items.map((it) => {
       const defaults = CATEGORY_DEFAULT_MODIFIER_GROUPS[cat.id] || [];
       let next = it;
+      if (applySplitDefaults && NO_SPLIT_CATEGORY_IDS.has(cat.id) && next.allowSplit === undefined) {
+        next = { ...next, allowSplit: false };
+      }
       if (!next.modifierGroupIds) {
         changed = true;
         next = { ...next, modifierGroupIds: defaults };
@@ -1527,7 +1546,7 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
   const price = variant ? variant.price : item.price;
 
   const activeGroups = (catalog.modifierGroups || []).filter((g) => (item.modifierGroupIds || []).includes(g.id));
-  const canSplit = activeGroups.length > 0 && !item.requiresGuarnicion;
+  const canSplit = activeGroups.length > 0 && !item.requiresGuarnicion && item.allowSplit !== false;
 
   function toggleOption(groupId, option) {
     setSelectedByGroup((prev) => {
@@ -3308,6 +3327,21 @@ function MenuEditor({ catalog, onSave }) {
                       })}
                     </div>
                   </div>
+
+                  {(item.modifierGroupIds || []).length > 0 && !item.requiresGuarnicion && (
+                    <button
+                      onClick={() => updateItemNow(cat.id, item.id, "allowSplit", item.allowSplit === false)}
+                      className="mt-2.5 w-full py-1.5 rounded-lg text-[11px] font-bold"
+                      style={{
+                        background: item.allowSplit === false ? "#171a24" : "#422006",
+                        color: item.allowSplit === false ? "#9ca3af" : "#fbbf24",
+                      }}
+                    >
+                      {item.allowSplit === false
+                        ? "✂️ Mitad y mitad: NO se ofrece — tocá para permitirlo"
+                        : "✂️ Mitad y mitad: SE ofrece — tocá para quitarlo"}
+                    </button>
+                  )}
 
                   <button
                     onClick={() => toggleActiveNow(cat.id, item.id, item.active === false)}
