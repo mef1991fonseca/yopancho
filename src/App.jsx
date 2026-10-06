@@ -1558,7 +1558,14 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
     : [];
   const secondHalf = halfCandidates.find((it) => it.id === secondHalfId) || null;
 
-  const basePrice = variant ? variant.price : item.price;
+  // La opción elegida se resuelve por nombre y no por referencia: el catálogo
+  // se vuelve a bajar cada 30s, así que los objetos de variants se reemplazan
+  // mientras el cliente tiene el modal abierto. Si la opción ya no existe
+  // (el encargado la renombró o la borró), cae en la primera.
+  const selectedVariant = item.variants
+    ? item.variants.find((v) => variant && v.label === variant.label) || item.variants[0]
+    : null;
+  const basePrice = selectedVariant ? selectedVariant.price : item.price;
   const price = !canHalf || sizeMode === "entera"
     ? basePrice
     : sizeMode === "media"
@@ -1656,21 +1663,24 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
 
         {item.variants && (
           <div className="mb-4">
-            <div className="text-xs font-bold c-gold mb-2">Tamaño</div>
+            <div className="text-xs font-bold c-gold mb-2">Elegí una opción</div>
             <div className="flex gap-2 flex-wrap">
-              {item.variants.map((v) => (
-                <button
-                  key={v.label}
-                  onClick={() => setVariant(v)}
-                  className="px-3.5 py-2 rounded-xl text-xs font-bold"
-                  style={{
-                    background: variant.label === v.label ? "#f2b705" : "#171a24",
-                    color: variant.label === v.label ? "#0c0e16" : "#d1d5db",
-                  }}
-                >
-                  {v.label} · {money(v.price)}
-                </button>
-              ))}
+              {item.variants.map((v, i) => {
+                const on = selectedVariant && selectedVariant.label === v.label;
+                return (
+                  <button
+                    key={i}
+                    onClick={() => setVariant(v)}
+                    className="px-3.5 py-2 rounded-xl text-xs font-bold"
+                    style={{
+                      background: on ? "#f2b705" : "#171a24",
+                      color: on ? "#0c0e16" : "#d1d5db",
+                    }}
+                  >
+                    {v.label} · {money(v.price)}
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
@@ -1828,7 +1838,7 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
           onClick={() => canAdd && onAdd(
             item,
             !canHalf || sizeMode === "entera"
-              ? variant
+              ? selectedVariant
               : { label: sizeMode === "media" ? "Media" : `Mitad y mitad con ${secondHalf ? secondHalf.name : ""}`, price },
             qty, note, modifierExtra
           )}
@@ -3058,6 +3068,53 @@ function MenuEditor({ catalog, onSave }) {
     });
   }
 
+  // Replaces an item inside the catalog by running `fn` on it. The variant
+  // helpers below all need the same nested map, so it lives here once.
+  function mapItem(catId, itemId, fn) {
+    patch({
+      ...local,
+      categories: local.categories.map((c) =>
+        c.id !== catId ? c : { ...c, items: c.items.map((it) => (it.id !== itemId ? it : fn(it))) }
+      ),
+    });
+  }
+
+  // Turns a single-priced product into one sold by options (media docena /
+  // docena, Simple / Doble / Triple, …). The first option inherits the price
+  // the product already had, so nothing is lost; the encargado then renames
+  // it and adds the rest. halfPrice is cleared because "mitad y mitad" and
+  // options are mutually exclusive (see canHalf in ItemModal).
+  function convertToVariants(catId, itemId) {
+    mapItem(catId, itemId, (it) => {
+      const { halfPrice, ...rest } = it;
+      return { ...rest, variants: [{ label: "Opción 1", price: Number(it.price) || 0 }] };
+    });
+  }
+
+  function addVariant(catId, itemId) {
+    mapItem(catId, itemId, (it) => {
+      const existing = it.variants || [];
+      // El nombre se elige para no repetir uno ya usado: la opción que el
+      // cliente eligió se identifica por nombre, así que dos iguales se
+      // confundirían entre sí.
+      let n = existing.length + 1;
+      while (existing.some((v) => v.label === `Opción ${n}`)) n++;
+      return { ...it, variants: [...existing, { label: `Opción ${n}`, price: 0 }] };
+    });
+  }
+
+  // Deleting the last option returns the product to a plain single price
+  // (keeping that option's price) instead of leaving an empty variants array,
+  // which would render a product with no price at all.
+  function removeVariant(catId, itemId, idx) {
+    mapItem(catId, itemId, (it) => {
+      const rest = (it.variants || []).filter((_, i) => i !== idx);
+      if (rest.length) return { ...it, variants: rest };
+      const { variants, ...plain } = it;
+      return { ...plain, price: Number((it.variants[idx] || {}).price) || 0 };
+    });
+  }
+
   function removeItem(catId, itemId) {
     patch({
       ...local,
@@ -3365,19 +3422,45 @@ function MenuEditor({ catalog, onSave }) {
                   </div>
 
                   {item.variants ? (
-                    <div className="flex gap-2 flex-wrap">
-                      {item.variants.map((v, idx) => (
-                        <div key={idx} className="flex items-center gap-1 bg-dark rounded-lg px-2 py-1">
-                          <span className="text-[10px] c-tan">{v.label}</span>
-                          <span className="text-[10px]">$</span>
-                          <input
-                            type="number"
-                            value={v.price}
-                            onChange={(e) => updateVariant(cat.id, item.id, idx, "price", e.target.value)}
-                            className="w-16 bg-transparent text-xs font-mono-t outline-none"
-                          />
-                        </div>
-                      ))}
+                    <div>
+                      <div className="text-[10px] font-bold c-muted mb-1.5">
+                        Opciones y precios
+                        <span className="block c-brown font-normal">Ej: Media docena / Docena · Simple / Doble</span>
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        {item.variants.map((v, idx) => (
+                          <div key={idx} className="flex items-center gap-1.5 bg-dark rounded-lg px-2 py-1.5">
+                            <input
+                              value={v.label}
+                              placeholder="Nombre de la opción"
+                              onChange={(e) => updateVariant(cat.id, item.id, idx, "label", e.target.value)}
+                              className="flex-1 min-w-0 bg-transparent text-[11px] c-cream outline-none"
+                            />
+                            <span className="text-[10px]">$</span>
+                            <input
+                              type="number"
+                              value={v.price}
+                              onChange={(e) => updateVariant(cat.id, item.id, idx, "price", e.target.value)}
+                              className="w-16 shrink-0 bg-transparent text-xs font-mono-t outline-none"
+                            />
+                            <button
+                              onClick={() => removeVariant(cat.id, item.id, idx)}
+                              title="Quitar esta opción"
+                              className="shrink-0 w-5 h-5 rounded flex items-center justify-center c-muted"
+                              style={{ background: "#171a24" }}
+                            >
+                              <X size={11} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        onClick={() => addVariant(cat.id, item.id)}
+                        className="mt-1.5 text-[11px] font-bold px-2.5 py-1 rounded-lg"
+                        style={{ background: "#0c0e16", color: "#f2b705" }}
+                      >
+                        + Agregar opción
+                      </button>
                     </div>
                   ) : (
                     <div className="flex items-center gap-1">
@@ -3388,6 +3471,13 @@ function MenuEditor({ catalog, onSave }) {
                         onChange={(e) => updateItem(cat.id, item.id, "price", Number(e.target.value) || 0)}
                         className="w-24 bg-dark rounded-lg px-2 py-1 text-xs font-mono-t outline-none"
                       />
+                      <button
+                        onClick={() => convertToVariants(cat.id, item.id)}
+                        className="ml-1 text-[10px] font-bold px-2 py-1 rounded-lg leading-tight"
+                        style={{ background: "#0c0e16", color: "#f2b705" }}
+                      >
+                        + Vender por opciones
+                      </button>
                     </div>
                   )}
 
