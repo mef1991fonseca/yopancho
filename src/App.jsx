@@ -474,21 +474,28 @@ function migrateCatalog(raw) {
   return { catalog: c, changed };
 }
 
+// Carga el catálogo. OJO con el manejo de errores de acá: una versión
+// anterior de esta función atrapaba CUALQUIER error de lectura y lo trataba
+// igual que "todavía no existe la fila", y entonces escribía DEFAULT_CATALOG
+// encima. Como el catálogo se relee cada 30 segundos y el encargado suele
+// tener el panel abierto (o sea, con permiso de escritura), un solo corte de
+// red bastaba para pisar meses de precios y fotos con los valores de fábrica.
+// Pasó de verdad el 6/10/2026. Por eso ahora:
+//   - un error de lectura se propaga; NUNCA deriva en una escritura;
+//   - solo se siembra el catálogo por defecto cuando la lectura salió bien y
+//     confirmó que no hay fila.
 async function loadCatalog() {
-  let raw = null;
-  try {
-    const res = await storage.get("menu-catalog");
-    if (res && res.value) raw = JSON.parse(res.value);
-  } catch (e) { /* not found yet */ }
+  const res = await storage.get("menu-catalog"); // si falla, que explote: el llamador decide
+  const raw = res && res.value ? JSON.parse(res.value) : null;
 
   if (!raw) {
-    // Best-effort seed. If we're not authenticated (RLS now restricts
-    // menu-catalog writes to admins), this will fail for a first-ever
-    // anonymous visitor — that's fine, we still hand back the in-memory
-    // default so the shop renders instead of showing an error screen.
+    // Llegar acá significa que la lectura salió bien y confirmó que no hay
+    // fila: base nueva, se siembra. Si no estamos autenticados (RLS limita la
+    // escritura a admins) falla y no pasa nada: igual devolvemos el catálogo
+    // en memoria para que la tienda renderice.
     try {
       await storage.set("menu-catalog", JSON.stringify(DEFAULT_CATALOG));
-    } catch (e) { /* not authenticated yet — an admin save will persist it */ }
+    } catch (e) { /* todavía sin sesión — la primera guardada del admin lo persiste */ }
     return DEFAULT_CATALOG;
   }
 
@@ -505,7 +512,39 @@ async function loadCatalog() {
   return migrated;
 }
 
+// Cuántos productos propios tiene un catálogo: los que el local creó o editó,
+// o sea lo que se pierde si se escribe el catálogo de fábrica encima.
+function señalesDeUso(c) {
+  const items = (c.categories || []).flatMap((cat) => cat.items || []);
+  return {
+    fotos: items.filter((it) => it.image).length,
+    promos: (c.promos || []).length,
+    items: items.length,
+  };
+}
+
 async function saveCatalog(catalog) {
+  // Último cinturón de seguridad. Si lo que estamos por guardar es exactamente
+  // el catálogo de fábrica, y en la base hay uno con fotos, promos o más
+  // productos, casi seguro es un bug y no una decisión: cancelamos en vez de
+  // borrarle el menú al local. (Pasó el 6/10/2026.)
+  if (JSON.stringify(catalog) === JSON.stringify(DEFAULT_CATALOG)) {
+    let actual = null;
+    try {
+      const res = await storage.get("menu-catalog");
+      if (res && res.value) actual = JSON.parse(res.value);
+    } catch (e) { /* si no podemos verificar, mejor no escribir */ }
+    if (actual) {
+      const a = señalesDeUso(actual);
+      const n = señalesDeUso(DEFAULT_CATALOG);
+      if (a.fotos > 0 || a.promos > 0 || a.items > n.items) {
+        throw new Error(
+          "Se canceló la guardada: se estaba por reemplazar el menú del local " +
+          "por el catálogo de fábrica. Recargá la página y volvé a entrar al panel."
+        );
+      }
+    }
+  }
   await storage.set("menu-catalog", JSON.stringify(catalog));
 }
 
@@ -556,11 +595,22 @@ export default function App() {
   // Keep the catalog in sync with what the admin sets (prices, active/inactive
   // items). Without this, a customer who already had the shop open would keep
   // seeing an item as available even after the local marks it "agotado hoy".
+  // Este refresco es de SOLO LECTURA a propósito. Antes llamaba a
+  // loadCatalog(), que ante un error devolvía DEFAULT_CATALOG: un corte de red
+  // de un segundo dejaba toda la app mostrando el catálogo de fábrica, y la
+  // siguiente guardada del admin lo escribía en la base. Si la lectura falla,
+  // nos quedamos con el catálogo que ya teníamos y listo.
   useEffect(() => {
     if (!ready) return;
     const t = setInterval(async () => {
-      const fresh = await loadCatalog();
-      setCatalog(fresh);
+      try {
+        const res = await storage.get("menu-catalog");
+        if (!res || !res.value) return; // sin fila: no tocamos lo que está en pantalla
+        const { catalog: fresh } = migrateCatalog(JSON.parse(res.value));
+        setCatalog(fresh);
+      } catch (e) {
+        console.error("[YoPancho] No se pudo refrescar el menú (se mantiene el actual):", e);
+      }
     }, 30000);
     return () => clearInterval(t);
   }, [ready]);
@@ -605,10 +655,26 @@ export default function App() {
     setView("shop");
   }
 
+  // Guarda el menú. Si la base rechaza la escritura (sin conexión, sesión
+  // vencida, o el cinturón de seguridad de saveCatalog), deshacemos el cambio
+  // en pantalla y avisamos. Antes el error quedaba en la nada: el panel
+  // mostraba el cambio y decía "guardado" aunque la base no se hubiera
+  // enterado, y el encargado se iba convencido de que estaba hecho.
   const persistCatalog = useCallback(async (next) => {
+    const anterior = catalog;
     setCatalog(next);
-    await saveCatalog(next);
-  }, []);
+    try {
+      await saveCatalog(next);
+    } catch (e) {
+      console.error("[YoPancho] No se pudo guardar el menú:", e);
+      setCatalog(anterior);
+      window.alert(
+        (e && e.message ? e.message : "No se pudo guardar el menú.") +
+        "\n\nEl cambio NO quedó guardado."
+      );
+      throw e;
+    }
+  }, [catalog]);
 
   if (loadError) {
     return (
