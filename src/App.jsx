@@ -1599,6 +1599,36 @@ function ModifierGroupPicker({ groups, selected, onToggle }) {
   );
 }
 
+/* ------------------------------------------------------------------ */
+/*  PROMOS                                                              */
+/* ------------------------------------------------------------------ */
+// Una promo es un producto común (vive en una categoría, tiene foto, precio y
+// se marca agotado como cualquier otro) con un campo extra: `promo.pasos`.
+//
+// Cada paso es "elegí N de esta lista". Con eso alcanzan los tres casos que
+// pidió el encargado:
+//   · 2 pizzas por $22.000  → un paso, elegir 2, opciones = las 5 pizzas
+//   · Box de 4 hamburguesas → un paso, elegir 4, opciones = los 2 estilos
+//   · Promo del mes         → paso 1 la comida, paso 2 la gaseosa
+//
+// El precio de la promo manda: lo que valen los productos elegidos se ignora.
+// Adentro de una promo no se ofrece mitad y mitad (pedido expreso del local).
+//
+// Las opciones pueden apuntar a un producto del menú (itemId, con su variante
+// fijada: la Smash siempre Simple) o ser texto libre, para cosas como
+// "Cheddar y bacon" que no son un producto en sí.
+function pasoOpcionNombre(op, catalog) {
+  if (op.nombre) return op.nombre;
+  const it = (catalog.categories || []).flatMap((c) => c.items || []).find((x) => x.id === op.itemId);
+  if (!it) return "(producto borrado)";
+  return op.variantLabel ? `${it.name} ${op.variantLabel}` : it.name;
+}
+
+// Cuántas unidades lleva elegidas un paso.
+function totalElegido(sel) {
+  return Object.values(sel || {}).reduce((n, q) => n + q, 0);
+}
+
 function ItemModal({ item, catalog, onClose, onAdd }) {
   const [variant, setVariant] = useState(item.variants ? item.variants[0] : null);
   const [qty, setQty] = useState(1);
@@ -1613,8 +1643,13 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
   // el panel. Si está cargado, el cliente puede pedir entera, media, o mitad y
   // mitad eligiendo el segundo gusto entre los que también tengan precio de
   // media. Es independiente de "Dividir en 2" (que reparte aderezos, no gustos).
+  // Promos: una selección por paso, { [opcionId]: cantidad }.
+  const pasos = (item.promo && item.promo.pasos) || null;
+  const [promoSel, setPromoSel] = useState(() => (pasos || []).map(() => ({})));
+  const [promoMods, setPromoMods] = useState(() => (pasos || []).map(() => ({})));
+
   const halfPrice = Number(item.halfPrice) || 0;
-  const canHalf = halfPrice > 0 && !item.variants;
+  const canHalf = halfPrice > 0 && !item.variants && !pasos;
   const [sizeMode, setSizeMode] = useState("entera"); // "entera" | "media" | "mitad"
   const [secondHalfId, setSecondHalfId] = useState(null);
 
@@ -1681,6 +1716,65 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
   }
   const modifierExtra = splitMode ? sumExtras(half1Selected) + sumExtras(half2Selected) : sumExtras(selectedByGroup);
 
+  function togglePromoOpcion(pasoIdx, opId, delta) {
+    const paso = pasos[pasoIdx];
+    setPromoSel((prev) => {
+      const next = prev.map((s, i) => (i === pasoIdx ? { ...s } : s));
+      const sel = next[pasoIdx];
+      const actual = sel[opId] || 0;
+
+      if (paso.elegir === 1) {
+        // Un solo ítem: elegir otra opción reemplaza a la anterior.
+        return next.map((s, i) => (i === pasoIdx ? (actual ? {} : { [opId]: 1 }) : s));
+      }
+      const nuevo = actual + delta;
+      if (nuevo <= 0) delete sel[opId];
+      else if (!paso.repetir && nuevo > 1) return prev;            // sin repetidos: máximo 1 de cada una
+      else if (totalElegido(sel) - actual + nuevo > paso.elegir) return prev; // no pasarse del total
+      else sel[opId] = nuevo;
+      return next;
+    });
+  }
+
+  function togglePromoMod(pasoIdx, groupId, option) {
+    setPromoMods((prev) => prev.map((m, i) => {
+      if (i !== pasoIdx) return m;
+      const actuales = m[groupId] || [];
+      return {
+        ...m,
+        [groupId]: actuales.includes(option) ? actuales.filter((x) => x !== option) : [...actuales, option],
+      };
+    }));
+  }
+
+  // Los pasos completos son los que llegaron justo a la cantidad pedida.
+  const pasosCompletos = !pasos || pasos.every((p, i) => totalElegido(promoSel[i]) === p.elegir);
+
+  // El detalle de la promo viaja dentro de la nota de la línea, que es lo que
+  // ya llega al WhatsApp, al panel, al Excel y mañana al ticket. Así no hay que
+  // tocar ninguno de esos caminos.
+  const promoNota = !pasos ? "" : pasos.map((paso, i) => {
+    const elegidas = Object.entries(promoSel[i] || {})
+      .map(([opId, q]) => {
+        const op = (paso.opciones || []).find((o) => o.id === opId);
+        if (!op) return null;
+        const nombre = pasoOpcionNombre(op, catalog);
+        return paso.elegir === 1 ? nombre : `${q}x ${nombre}`;
+      })
+      .filter(Boolean)
+      .join(", ");
+
+    const grupos = (catalog.modifierGroups || []).filter((g) => (paso.modifierGroupIds || []).includes(g.id));
+    const mods = grupos.map((g) => {
+      const elegidos = (promoMods[i] || {})[g.id] || [];
+      return elegidos.length ? `${g.name}: ${elegidos.join(", ")}` : "";
+    }).filter(Boolean).join(" · ");
+
+    // "(las 4)" deja claro en la cocina que el aderezo va para todas.
+    const alcance = paso.elegir > 1 ? ` (las ${paso.elegir})` : "";
+    return [elegidas, mods ? `Aderezos${alcance}: ${mods}` : ""].filter(Boolean).join(" — ");
+  }).filter(Boolean).join(" · ");
+
   const sizeNote = !canHalf || sizeMode === "entera"
     ? ""
     : sizeMode === "media"
@@ -1697,6 +1791,7 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
         extraNote.trim(),
       ].filter(Boolean).join(" · ")
     : [
+        promoNota,
         sizeNote,
         proteinChoice ? `Tipo: ${proteinChoice}` : "",
         groupsNote(selectedByGroup),
@@ -1705,7 +1800,8 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
       ].filter(Boolean).join(" · ");
 
   const canAdd = (!item.requiresGuarnicion || !!platoGuarnicion) && (!item.proteinChoices || !!proteinChoice)
-    && (!canHalf || sizeMode !== "mitad" || !!secondHalf);
+    && (!canHalf || sizeMode !== "mitad" || !!secondHalf)
+    && pasosCompletos;
   const photo = item.image || PRODUCT_IMAGES[item.id];
 
   return (
@@ -1726,6 +1822,92 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
           </button>
         </div>
         {item.desc && <p className="text-sm c-tan mb-4">{item.desc}</p>}
+
+        {pasos && pasos.map((paso, i) => {
+          const elegido = totalElegido(promoSel[i]);
+          const listo = elegido === paso.elegir;
+          const grupos = (catalog.modifierGroups || []).filter((g) => (paso.modifierGroupIds || []).includes(g.id));
+          return (
+            <div key={paso.id || i} className="mb-5">
+              <div className="flex items-baseline justify-between gap-2 mb-2">
+                <div className="text-xs font-bold c-gold">
+                  {paso.titulo || `Elegí ${paso.elegir}`}
+                </div>
+                {paso.elegir > 1 && (
+                  <span
+                    className="text-[11px] font-mono-t shrink-0"
+                    style={{ color: listo ? "#22c55e" : "#9ca3af" }}
+                  >
+                    {elegido} de {paso.elegir}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                {(paso.opciones || []).map((op) => {
+                  const q = (promoSel[i] || {})[op.id] || 0;
+                  const nombre = pasoOpcionNombre(op, catalog);
+                  if (paso.elegir === 1) {
+                    return (
+                      <button
+                        key={op.id}
+                        onClick={() => togglePromoOpcion(i, op.id, 1)}
+                        className="w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold"
+                        style={{ background: q ? "#f2b705" : "#171a24", color: q ? "#0c0e16" : "#d1d5db" }}
+                      >
+                        {nombre}
+                      </button>
+                    );
+                  }
+                  return (
+                    <div
+                      key={op.id}
+                      className="flex items-center gap-2 px-3 py-2 rounded-xl"
+                      style={{ background: q ? "#241d06" : "#171a24", border: q ? "1px solid #f2b705" : "1px solid transparent" }}
+                    >
+                      <span className="flex-1 min-w-0 text-xs font-bold c-cream">{nombre}</span>
+                      <button
+                        onClick={() => togglePromoOpcion(i, op.id, -1)}
+                        disabled={!q}
+                        aria-label={`Quitar ${nombre}`}
+                        className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 disabled:opacity-30"
+                        style={{ background: "#0c0e16", color: "#d1d5db" }}
+                      >
+                        <Minus size={13} />
+                      </button>
+                      <span className="font-mono-t font-bold w-4 text-center text-sm">{q}</span>
+                      <button
+                        onClick={() => togglePromoOpcion(i, op.id, 1)}
+                        disabled={listo || (!paso.repetir && q >= 1)}
+                        aria-label={`Agregar ${nombre}`}
+                        className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 disabled:opacity-30"
+                        style={{ background: "#0c0e16", color: "#f2b705" }}
+                      >
+                        <Plus size={13} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {grupos.length > 0 && (
+                <div className="mt-3">
+                  {paso.elegir > 1 && (
+                    <p className="text-[10px] c-muted mb-1.5">
+                      Lo que elijas acá va para {paso.elegir === 2 ? "las dos" : `las ${paso.elegir}`}. Si querés algo distinto
+                      en una, escribilo abajo en la aclaración.
+                    </p>
+                  )}
+                  <ModifierGroupPicker
+                    groups={grupos}
+                    selected={promoMods[i] || {}}
+                    onToggle={(g, o) => togglePromoMod(i, g, o)}
+                  />
+                </div>
+              )}
+            </div>
+          );
+        })}
 
         {item.variants && (
           <div className="mb-4">
@@ -1899,6 +2081,18 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
         )}
         {item.proteinChoices && !proteinChoice && (
           <p className="text-[11px] mb-2 text-center" style={{ color: "#dc2626" }}>Elegí el tipo (carne, pollo o cerdo) para poder agregar.</p>
+        )}
+        {pasos && !pasosCompletos && (
+          <p className="text-[11px] mb-2 text-center" style={{ color: "#dc2626" }}>
+            {(() => {
+              const i = pasos.findIndex((p, n) => totalElegido(promoSel[n]) !== p.elegir);
+              const p = pasos[i];
+              const faltan = p.elegir - totalElegido(promoSel[i]);
+              if (p.elegir === 1) return `Elegí una opción en "${p.titulo || "el primer paso"}".`;
+              if (faltan > 0) return `Te ${faltan === 1 ? "falta" : "faltan"} ${faltan} en "${p.titulo || "el primer paso"}".`;
+              return `Elegiste de más en "${p.titulo || "el primer paso"}".`;
+            })()}
+          </p>
         )}
         <button
           onClick={() => canAdd && onAdd(
@@ -3182,6 +3376,72 @@ function MenuEditor({ catalog, onSave }) {
     });
   }
 
+  /* ---- Promos ------------------------------------------------------ */
+  // Plantillas: el encargado casi siempre arma una de estas dos formas, así
+  // que arrancar de cero es la excepción y no la regla.
+  const PLANTILLAS_PROMO = {
+    combo: {
+      nombre: "Combo (comida + bebida)",
+      pasos: () => [
+        { id: uid(), titulo: "Elegí tu comida", elegir: 1, repetir: false, modifierGroupIds: ["verduras", "aderezos"], opciones: [] },
+        { id: uid(), titulo: "Elegí tu bebida", elegir: 1, repetir: false, modifierGroupIds: [], opciones: [] },
+      ],
+    },
+    varias: {
+      nombre: "Varias unidades a precio fijo",
+      pasos: () => [
+        { id: uid(), titulo: "Elegí 2", elegir: 2, repetir: true, modifierGroupIds: [], opciones: [] },
+      ],
+    },
+    cero: { nombre: "Desde cero", pasos: () => [] },
+  };
+
+  function convertirEnPromo(catId, itemId, plantilla) {
+    mapItem(catId, itemId, (it) => ({
+      ...it,
+      promo: { pasos: PLANTILLAS_PROMO[plantilla].pasos() },
+    }));
+  }
+
+  function dejarDeSerPromo(catId, itemId) {
+    mapItem(catId, itemId, (it) => {
+      const { promo, ...resto } = it;
+      return resto;
+    });
+  }
+
+  function mapPaso(catId, itemId, pasoIdx, fn) {
+    mapItem(catId, itemId, (it) => ({
+      ...it,
+      promo: { ...it.promo, pasos: it.promo.pasos.map((p, i) => (i !== pasoIdx ? p : fn(p))) },
+    }));
+  }
+
+  function agregarPaso(catId, itemId) {
+    mapItem(catId, itemId, (it) => ({
+      ...it,
+      promo: {
+        ...it.promo,
+        pasos: [...(it.promo.pasos || []), { id: uid(), titulo: "", elegir: 1, repetir: false, modifierGroupIds: [], opciones: [] }],
+      },
+    }));
+  }
+
+  function quitarPaso(catId, itemId, pasoIdx) {
+    mapItem(catId, itemId, (it) => ({
+      ...it,
+      promo: { ...it.promo, pasos: it.promo.pasos.filter((_, i) => i !== pasoIdx) },
+    }));
+  }
+
+  function agregarOpcion(catId, itemId, pasoIdx, opcion) {
+    mapPaso(catId, itemId, pasoIdx, (p) => ({ ...p, opciones: [...(p.opciones || []), { id: uid(), ...opcion }] }));
+  }
+
+  function quitarOpcion(catId, itemId, pasoIdx, opId) {
+    mapPaso(catId, itemId, pasoIdx, (p) => ({ ...p, opciones: p.opciones.filter((o) => o.id !== opId) }));
+  }
+
   function removeItem(catId, itemId) {
     patch({
       ...local,
@@ -3571,7 +3831,7 @@ function MenuEditor({ catalog, onSave }) {
                     </div>
                   )}
 
-                  {!item.variants && (
+                  {!item.variants && !item.promo && (
                     <div className="flex items-center gap-2 mt-2">
                       <span className="text-[10px] c-muted flex-1">
                         Precio de la media (pizzas)
@@ -3587,6 +3847,37 @@ function MenuEditor({ catalog, onSave }) {
                     </div>
                   )}
 
+                  {item.promo ? (
+                    <PromoBuilder
+                      catalog={local}
+                      item={item}
+                      onAgregarPaso={() => agregarPaso(cat.id, item.id)}
+                      onQuitarPaso={(i) => quitarPaso(cat.id, item.id, i)}
+                      onCambiarPaso={(i, campo, valor) =>
+                        mapPaso(cat.id, item.id, i, (p) => ({ ...p, [campo]: valor }))}
+                      onAgregarOpcion={(i, op) => agregarOpcion(cat.id, item.id, i, op)}
+                      onQuitarOpcion={(i, opId) => quitarOpcion(cat.id, item.id, i, opId)}
+                      onDejarDeSerPromo={() => dejarDeSerPromo(cat.id, item.id)}
+                    />
+                  ) : (
+                    <div className="mt-2.5 flex gap-1.5 flex-wrap items-center">
+                      <span className="text-[10px] c-muted">Convertir en promo:</span>
+                      {Object.entries(PLANTILLAS_PROMO).map(([clave, p]) => (
+                        <button
+                          key={clave}
+                          onClick={() => convertirEnPromo(cat.id, item.id, clave)}
+                          className="text-[10px] font-bold px-2 py-1 rounded-lg"
+                          style={{ background: "#0c0e16", color: "#f2b705" }}
+                        >
+                          {p.nombre}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* En una promo, los aderezos se configuran en cada paso: estos
+                      de acá no se usarían y confundirían al tener el mismo nombre. */}
+                  {!item.promo && (
                   <div className="mt-2.5">
                     <div className="text-[10px] font-bold c-muted mb-1.5">Personalización que se le ofrece al cliente</div>
                     <div className="flex gap-1.5 flex-wrap">
@@ -3605,8 +3896,9 @@ function MenuEditor({ catalog, onSave }) {
                       })}
                     </div>
                   </div>
+                  )}
 
-                  {(item.modifierGroupIds || []).length > 0 && !item.requiresGuarnicion && (
+                  {!item.promo && (item.modifierGroupIds || []).length > 0 && !item.requiresGuarnicion && (
                     <button
                       onClick={() => updateItemNow(cat.id, item.id, "allowSplit", item.allowSplit === false)}
                       className="mt-2.5 w-full py-1.5 rounded-lg text-[11px] font-bold"
@@ -3648,6 +3940,167 @@ function MenuEditor({ catalog, onSave }) {
       )}
 
       {dialog && <AdminPromptModal dialog={dialog} onClose={() => setDialog(null)} />}
+    </div>
+  );
+}
+
+/* Armador de promos: los pasos que va a recorrer el cliente.
+   Las opciones se eligen del menú real con un desplegable, para que el
+   encargado no tenga que escribir nombres ni acordarse de los precios — y
+   para que si mañana renombra un producto, la promo lo siga. */
+function PromoBuilder({ catalog, item, onAgregarPaso, onQuitarPaso, onCambiarPaso, onAgregarOpcion, onQuitarOpcion, onDejarDeSerPromo }) {
+  const pasos = (item.promo && item.promo.pasos) || [];
+
+  function elegirDelMenu(pasoIdx, valor) {
+    if (!valor) return;
+    const [itemId, variantLabel] = valor.split("||");
+    onAgregarOpcion(pasoIdx, { itemId, variantLabel: variantLabel || undefined });
+  }
+
+  return (
+    <div className="mt-2.5 p-2.5 rounded-xl" style={{ background: "#0c0e16", border: "1px solid #422006" }}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[11px] font-bold c-gold">🎁 Promo — pasos que elige el cliente</span>
+        <button onClick={onDejarDeSerPromo} className="text-[10px] c-muted underline">Dejar de ser promo</button>
+      </div>
+
+      <p className="text-[10px] c-brown mb-2.5 leading-relaxed">
+        El precio de arriba es el que se cobra. Lo que valgan los productos elegidos no se suma.
+      </p>
+
+      {pasos.length === 0 && (
+        <p className="text-[10px] c-muted mb-2">Todavía no tiene pasos. Agregá el primero.</p>
+      )}
+
+      {pasos.map((paso, i) => (
+        <div key={paso.id || i} className="mb-2.5 p-2.5 rounded-lg" style={{ background: "#11131b" }}>
+          <div className="flex items-center gap-1.5 mb-2">
+            <span className="text-[10px] font-bold c-muted shrink-0">Paso {i + 1}</span>
+            <input
+              value={paso.titulo || ""}
+              placeholder="Ej: Elegí tus 4 hamburguesas"
+              onChange={(e) => onCambiarPaso(i, "titulo", e.target.value)}
+              className="flex-1 min-w-0 bg-dark rounded-lg px-2 py-1 text-[11px] c-cream outline-none"
+            />
+            <button onClick={() => onQuitarPaso(i)} aria-label={`Quitar paso ${i + 1}`} className="shrink-0">
+              <Trash2 size={12} className="c-red" />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <span className="text-[10px] c-muted">Cuántas elige:</span>
+            <input
+              type="number"
+              min="1"
+              value={paso.elegir || 1}
+              onChange={(e) => onCambiarPaso(i, "elegir", Math.max(1, Number(e.target.value) || 1))}
+              className="w-14 bg-dark rounded-lg px-2 py-1 text-[11px] font-mono-t outline-none text-right"
+            />
+            {(paso.elegir || 1) > 1 && (
+              <button
+                onClick={() => onCambiarPaso(i, "repetir", !paso.repetir)}
+                className="text-[10px] font-bold px-2 py-1 rounded-lg"
+                style={{ background: paso.repetir ? "#422006" : "#171a24", color: paso.repetir ? "#fbbf24" : "#9ca3af" }}
+              >
+                {paso.repetir ? "✓ puede llevar repetidas" : "no puede repetir"}
+              </button>
+            )}
+          </div>
+
+          <div className="mb-2">
+            <div className="text-[10px] c-muted mb-1">Aderezos y demás, que se preguntan una sola vez para todo el paso:</div>
+            <div className="flex gap-1 flex-wrap">
+              {(catalog.modifierGroups || []).map((g) => {
+                const on = (paso.modifierGroupIds || []).includes(g.id);
+                return (
+                  <button
+                    key={g.id}
+                    onClick={() => onCambiarPaso(i, "modifierGroupIds",
+                      on ? (paso.modifierGroupIds || []).filter((x) => x !== g.id)
+                         : [...(paso.modifierGroupIds || []), g.id])}
+                    className="px-2 py-0.5 rounded-lg text-[10px] font-bold"
+                    style={{ background: on ? "#f2b705" : "#171a24", color: on ? "#0c0e16" : "#6b7280" }}
+                  >
+                    {g.emoji} {g.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="text-[10px] c-muted mb-1">Opciones entre las que elige:</div>
+          <div className="flex flex-col gap-1 mb-1.5">
+            {(paso.opciones || []).length === 0 && (
+              <span className="text-[10px] c-brown">Ninguna todavía.</span>
+            )}
+            {(paso.opciones || []).map((op) => (
+              <div key={op.id} className="flex items-center gap-1.5 bg-dark rounded-lg px-2 py-1">
+                <span className="flex-1 min-w-0 text-[11px] c-cream truncate">
+                  {pasoOpcionNombre(op, catalog)}
+                  {!op.itemId && <span className="c-brown"> · texto libre</span>}
+                </span>
+                <button onClick={() => onQuitarOpcion(i, op.id)} aria-label="Quitar opción" className="shrink-0">
+                  <X size={11} className="c-muted" />
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex gap-1.5 flex-wrap">
+            <select
+              value=""
+              onChange={(e) => { elegirDelMenu(i, e.target.value); e.target.value = ""; }}
+              className="flex-1 min-w-0 bg-dark rounded-lg px-2 py-1 text-[11px] c-cream outline-none"
+            >
+              <option value="">+ Agregar producto del menú…</option>
+              {(catalog.categories || []).map((c) => (
+                <optgroup key={c.id} label={`${c.emoji} ${c.name}`}>
+                  {(c.items || []).filter((it) => it.id !== item.id && !it.promo).flatMap((it) =>
+                    it.variants
+                      ? it.variants.map((v) => (
+                          <option key={`${it.id}||${v.label}`} value={`${it.id}||${v.label}`}>
+                            {it.name} {v.label}
+                          </option>
+                        ))
+                      : [<option key={it.id} value={it.id}>{it.name}</option>]
+                  )}
+                </optgroup>
+              ))}
+            </select>
+            <button
+              onClick={() => onAgregarOpcion(i, { nombre: "Nueva opción" })}
+              className="text-[10px] font-bold px-2 py-1 rounded-lg shrink-0"
+              style={{ background: "#171a24", color: "#9ca3af" }}
+              title="Para opciones que no son un producto, como 'Cheddar y bacon'"
+            >
+              + texto libre
+            </button>
+          </div>
+
+          {(paso.opciones || []).some((o) => !o.itemId) && (
+            <div className="mt-1.5 flex flex-col gap-1">
+              {(paso.opciones || []).filter((o) => !o.itemId).map((op) => (
+                <input
+                  key={op.id}
+                  value={op.nombre || ""}
+                  placeholder="Ej: Cheddar y bacon"
+                  onChange={(e) => onCambiarPaso(i, "opciones",
+                    paso.opciones.map((o) => (o.id !== op.id ? o : { ...o, nombre: e.target.value })))}
+                  className="bg-dark rounded-lg px-2 py-1 text-[11px] c-cream outline-none"
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+
+      <button
+        onClick={onAgregarPaso}
+        className="text-[11px] font-bold px-2.5 py-1 rounded-lg"
+        style={{ background: "#171a24", color: "#f2b705" }}
+      >
+        + Agregar paso
+      </button>
     </div>
   );
 }
