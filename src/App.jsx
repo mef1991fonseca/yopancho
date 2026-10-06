@@ -3032,6 +3032,7 @@ function MenuEditor({ catalog, onSave }) {
   const [dirty, setDirty] = useState(false);
   const [openCat, setOpenCat] = useState(catalog.categories[0]?.id || null);
   const [groupsOpen, setGroupsOpen] = useState(false);
+  const [soloPrecios, setSoloPrecios] = useState(false);
   const [platoGuarnOpen, setPlatoGuarnOpen] = useState(false);
   const [dialog, setDialog] = useState(null);
 
@@ -3357,6 +3358,29 @@ function MenuEditor({ catalog, onSave }) {
         </div>
       )}
 
+      {/* Actualizar precios producto por producto obliga a recorrer 100 tarjetas.
+          Esta vista deja solo nombre + precio, para bajar la lista de corrido. */}
+      <button
+        onClick={() => setSoloPrecios((v) => !v)}
+        className="w-full mb-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2"
+        style={{
+          background: soloPrecios ? "#f2b705" : "#11131b",
+          color: soloPrecios ? "#0c0e16" : "#f2b705",
+          border: "1px solid #171a24",
+        }}
+      >
+        {soloPrecios ? "← Volver al menú completo" : "💲 Actualizar precios en lista"}
+      </button>
+
+      {soloPrecios ? (
+        <PriceListEditor
+          local={local}
+          onChange={patch}
+          dirty={dirty}
+          onSave={save}
+        />
+      ) : (
+      <>
       <div className="mb-4 rounded-2xl overflow-hidden" style={{ background: "#11131b", border: "1px solid #171a24" }}>
         <button onClick={() => setGroupsOpen((v) => !v)} className="w-full p-3.5 flex items-center justify-between">
           <span className="font-bold text-sm c-cream">🧩 Grupos de personalización</span>
@@ -3620,8 +3644,134 @@ function MenuEditor({ catalog, onSave }) {
       <button onClick={addCategory} className="w-full py-3 rounded-2xl text-sm font-bold flex items-center justify-center gap-1.5 mt-2" style={{ background: "#171a24", color: "#f2b705" }}>
         <PlusCircle size={15} /> Nueva categoría
       </button>
+      </>
+      )}
 
       {dialog && <AdminPromptModal dialog={dialog} onClose={() => setDialog(null)} />}
+    </div>
+  );
+}
+
+/* Lista plana de nombre + precio, para actualizar toda la carta de corrido.
+   Muestra también el precio de la media (pizzas) y el de cada opción (media
+   docena / docena), porque son precios que también hay que actualizar y
+   buscarlos producto por producto es justamente lo que esta vista evita. */
+function PriceListEditor({ local, onChange, dirty, onSave }) {
+  function setPrecio(catId, itemId, campo, valor) {
+    onChange({
+      ...local,
+      categories: local.categories.map((c) =>
+        c.id !== catId ? c : {
+          ...c,
+          items: c.items.map((it) => (it.id !== itemId ? it : { ...it, [campo]: Number(valor) || 0 })),
+        }
+      ),
+    });
+  }
+
+  function setPrecioVariante(catId, itemId, idx, valor) {
+    onChange({
+      ...local,
+      categories: local.categories.map((c) =>
+        c.id !== catId ? c : {
+          ...c,
+          items: c.items.map((it) =>
+            it.id !== itemId ? it : {
+              ...it,
+              variants: it.variants.map((v, i) => (i !== idx ? v : { ...v, price: Number(valor) || 0 })),
+            }
+          ),
+        }
+      ),
+    });
+  }
+
+  const total = (local.categories || []).reduce((n, c) => n + (c.items || []).length, 0);
+
+  return (
+    <div>
+      <p className="text-[11px] c-muted mb-3 leading-relaxed">
+        {total} productos. Tocá cada precio y escribí el nuevo — al terminar, <strong className="c-gold">Guardar cambios</strong> arriba.
+        Acá no se puede borrar nada ni cambiar nombres: solo precios.
+      </p>
+
+      {(local.categories || []).map((cat) => (
+        <div key={cat.id} className="mb-4">
+          <div className="text-[11px] font-bold c-gold mb-1.5 sticky top-[46px] py-1" style={{ background: "#0c0e16" }}>
+            {cat.emoji} {cat.name}
+          </div>
+          <div className="rounded-xl overflow-hidden" style={{ border: "1px solid #171a24" }}>
+            {(cat.items || []).map((it, n) => (
+              <div
+                key={it.id}
+                className="px-3 py-2"
+                style={{ background: n % 2 ? "#0f1119" : "#11131b", borderTop: n ? "1px solid #171a24" : "none" }}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="flex-1 min-w-0 text-xs c-cream truncate">
+                    {it.name}
+                    {it.active === false && <span className="c-red text-[10px]"> · agotado</span>}
+                  </span>
+                  {it.variants ? (
+                    <span className="text-[10px] c-muted shrink-0">por opción ↓</span>
+                  ) : (
+                    <>
+                      <span className="text-[11px] c-muted">$</span>
+                      <input
+                        type="number"
+                        value={it.price || 0}
+                        onChange={(e) => setPrecio(cat.id, it.id, "price", e.target.value)}
+                        className="w-20 shrink-0 bg-dark rounded-lg px-2 py-1 text-xs font-mono-t outline-none text-right"
+                      />
+                    </>
+                  )}
+                </div>
+
+                {it.variants && (
+                  <div className="mt-1.5 pl-3 flex flex-col gap-1">
+                    {it.variants.map((v, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <span className="flex-1 min-w-0 text-[11px] c-tan truncate">{v.label}</span>
+                        <span className="text-[11px] c-muted">$</span>
+                        <input
+                          type="number"
+                          value={v.price || 0}
+                          onChange={(e) => setPrecioVariante(cat.id, it.id, idx, e.target.value)}
+                          className="w-20 shrink-0 bg-dark rounded-lg px-2 py-1 text-xs font-mono-t outline-none text-right"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {!it.variants && (
+                  <div className="mt-1.5 pl-3 flex items-center gap-2">
+                    <span className="flex-1 min-w-0 text-[11px] c-brown truncate">precio de la media (pizzas)</span>
+                    <span className="text-[11px] c-muted">$</span>
+                    <input
+                      type="number"
+                      value={it.halfPrice || ""}
+                      placeholder="0"
+                      onChange={(e) => setPrecio(cat.id, it.id, "halfPrice", e.target.value)}
+                      className="w-20 shrink-0 bg-dark rounded-lg px-2 py-1 text-xs font-mono-t outline-none text-right"
+                    />
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {dirty && (
+        <button
+          onClick={onSave}
+          className="w-full py-3 rounded-2xl text-sm font-bold flex items-center justify-center gap-1.5 mt-2"
+          style={{ background: "#f2b705", color: "#0c0e16" }}
+        >
+          <Save size={15} /> Guardar cambios
+        </button>
+      )}
     </div>
   );
 }
