@@ -183,10 +183,29 @@ export async function createStaffUser(email, password, name) {
 
 export const fileStorageAvailable = !!supabase;
 
+// Convierte el nombre de un archivo en algo seguro para usar como nombre de
+// objeto en Storage: solo letras, números, guiones y puntos.
+function slugDeArchivo(nombre) {
+  const base = String(nombre || "").replace(/\.[^.]*$/, "");       // sin extensión
+  const limpio = base
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")              // sin tildes
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48)
+    .toLowerCase();
+  return limpio || "img";
+}
+
+// El nombre del archivo subido empieza con el id del producto (o de la promo)
+// al que pertenece. Antes era solo fecha + azar, y cuando el catálogo perdió
+// los enlaces a las fotos (6/10/2026) no hubo forma de saber qué foto era de
+// qué producto: hubo que mirarlas una por una. Con el id adelante, volver a
+// vincularlas es una consulta.
 export async function uploadMediaFile(file, folder = "promos") {
   if (!supabase) throw new Error("Subida de archivos no disponible sin Supabase configurado.");
   const ext = (file.name.split(".").pop() || "bin").toLowerCase();
-  const path = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const slug = slugDeArchivo(file.name);
+  const path = `${folder}/${slug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
   const { error } = await supabase.storage.from("media").upload(path, file, {
     cacheControl: "3600",
     upsert: false,

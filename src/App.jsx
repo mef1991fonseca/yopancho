@@ -518,7 +518,7 @@ function señalesDeUso(c) {
   const items = (c.categories || []).flatMap((cat) => cat.items || []);
   return {
     fotos: items.filter((it) => it.image).length,
-    promos: (c.promos || []).length,
+    promos: (c.promotions || []).length, // ojo: la clave es "promotions", no "promos"
     items: items.length,
   };
 }
@@ -3687,7 +3687,9 @@ function PromosPanel({ catalog, onSave }) {
   // uploading to Supabase Storage so promo photos don't go up as raw,
   // multi-megabyte phone camera captures (that bandwidth gets re-spent every
   // time a visitor's browser loads the promo, not just once at upload time).
-  function compressImageToFile(file) {
+  // `nombre` se usa como nombre del archivo subido: va el id de la promo, para
+  // poder saber después a cuál pertenece cada imagen del bucket.
+  function compressImageToFile(file, nombre) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => {
@@ -3702,7 +3704,7 @@ function PromosPanel({ catalog, onSave }) {
           canvas.height = h;
           canvas.getContext("2d").drawImage(img, 0, 0, w, h);
           canvas.toBlob(
-            (blob) => resolve(blob ? new File([blob], (file.name || "promo").replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" }) : file),
+            (blob) => resolve(blob ? new File([blob], (nombre || file.name || "promo").replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" }) : file),
             "image/jpeg",
             0.82
           );
@@ -3721,7 +3723,7 @@ function PromosPanel({ catalog, onSave }) {
     setUploadingId(id);
     try {
       if (fileStorageAvailable) {
-        const compressed = await compressImageToFile(file);
+        const compressed = await compressImageToFile(file, id);
         const url = await uploadMediaFile(compressed, "promos");
         await setPromoField(id, "image", url);
       } else {
@@ -3744,7 +3746,10 @@ function PromosPanel({ catalog, onSave }) {
     setUploadError("");
     setUploadingId(id);
     try {
-      const url = await uploadMediaFile(file, "promos");
+      const url = await uploadMediaFile(
+        new File([file], `${id}.${(file.name.split(".").pop() || "mp4")}`, { type: file.type }),
+        "promos"
+      );
       await setPromoField(id, "video", url);
     } catch (e) {
       setUploadError("No se pudo subir el video: " + (e.message || e));
