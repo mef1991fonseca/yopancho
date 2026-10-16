@@ -3177,6 +3177,11 @@ function TicketPrintable({ order, settings }) {
   // cabezal no siempre coinciden, y el desfasaje cambia según la impresora. En
   // vez de clavar un número a ciegas, se corrige desde Configuración: positivo
   // corre el ticket a la derecha, negativo a la izquierda.
+  // Lo que la cocina lee de apuro es qué es el pedido y con qué aderezos. Cuánto
+  // agrandarlo depende de la vista de cada uno, así que se elige en Configuración.
+  const ESCALAS = { 1: [1, 1], 2: [1.3, 1.15], 3: [1.55, 1.35] };
+  const [escItem, escDet] = ESCALAS[Number(settings.ticketLetra)] || ESCALAS[2];
+
   const corrimiento = Number(settings.ticketCorrimiento);
   const dx = Number.isFinite(corrimiento) ? Math.max(-margen, Math.min(margen, corrimiento)) : 0;
   const izq = margen + dx;
@@ -3216,10 +3221,18 @@ function TicketPrintable({ order, settings }) {
             font-weight: bold; font-size: ${(cuerpo * 1.3).toFixed(2)}mm;
             background: #000; color: #fff; display: inline-block; padding: 0.5mm 2mm; margin-top: 1mm;
           }
-          #ticket-print .tk-linea { display: flex; gap: 1mm; align-items: baseline; font-weight: bold; }
+          #ticket-print .tk-linea {
+            display: flex; gap: 1mm; align-items: baseline; font-weight: bold;
+            font-size: ${(cuerpo * escItem).toFixed(2)}mm;
+          }
           #ticket-print .tk-nom { flex: 1 1 auto; min-width: 0; word-break: break-word; }
-          #ticket-print .tk-pre { flex: 0 0 auto; white-space: nowrap; }
-          #ticket-print .tk-det { padding-left: ${(cuerpo * 2).toFixed(2)}mm; }
+          /* El precio no se agranda: a la cocina le importa el producto, y si
+             creciera le comería el renglón al nombre. */
+          #ticket-print .tk-pre { flex: 0 0 auto; white-space: nowrap; font-size: ${cuerpo.toFixed(2)}mm; }
+          #ticket-print .tk-det {
+            padding-left: ${(cuerpo * 1.6).toFixed(2)}mm;
+            font-size: ${(cuerpo * escDet).toFixed(2)}mm;
+          }
           #ticket-print .tk-det div { word-break: break-word; }
           #ticket-print .tk-item { margin-bottom: ${(cuerpo * 0.8).toFixed(2)}mm; }
           #ticket-print .tk-total {
@@ -4827,6 +4840,28 @@ function SettingsPanel({ catalog, onSave, isOwner }) {
           })}
         </div>
         <p className="text-[10px] c-brown mt-1">Es el ancho del rollo. Si los tickets salen cortados a la derecha, probá con el otro.</p>
+
+        <div className="mt-3">
+          <div className="text-[11px] c-muted mb-1.5">
+            Tamaño de letra del producto y los aderezos
+            <span className="block c-brown">Es lo que lee la cocina. Más grande ocupa más papel.</span>
+          </div>
+          <div className="flex gap-2">
+            {[[1, "Normal"], [2, "Grande"], [3, "Más grande"]].map(([v, label]) => {
+              const on = (Number(s.ticketLetra) || 2) === v;
+              return (
+                <button
+                  key={v}
+                  onClick={() => set("ticketLetra", v)}
+                  className="flex-1 py-2.5 rounded-xl text-xs font-bold"
+                  style={{ background: on ? "#f2b705" : "#171a24", color: on ? "#0c0e16" : "#d1d5db" }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
         <div className="flex items-center gap-2 mt-3">
           <span className="text-[11px] c-muted flex-1">
