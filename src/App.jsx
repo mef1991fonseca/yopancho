@@ -3173,6 +3173,14 @@ function TicketPrintable({ order, settings }) {
   const imprimible = TICKET_IMPRIMIBLE[ancho];
   const margen = (ancho - imprimible) / 2;
   const cuerpo = (imprimible / TICKET_COLUMNAS[ancho]) / 0.6; // monoespaciada: avance ≈ 0.6em
+  // Dónde el navegador cree que arranca el papel y dónde arranca a imprimir el
+  // cabezal no siempre coinciden, y el desfasaje cambia según la impresora. En
+  // vez de clavar un número a ciegas, se corrige desde Configuración: positivo
+  // corre el ticket a la derecha, negativo a la izquierda.
+  const corrimiento = Number(settings.ticketCorrimiento);
+  const dx = Number.isFinite(corrimiento) ? Math.max(-margen, Math.min(margen, corrimiento)) : 0;
+  const izq = margen + dx;
+  const der = margen - dx;
 
   const fecha = new Date(order.createdAt);
   const dia = fecha.toLocaleDateString("es-AR", { weekday: "short", day: "2-digit", month: "2-digit" }).replace(/-/g, "/");
@@ -3192,7 +3200,7 @@ function TicketPrintable({ order, settings }) {
             display: block !important;
             position: absolute; left: 0; top: 0;
             width: ${ancho}mm;
-            padding: ${margen}mm ${margen}mm 8mm;
+            padding: ${margen}mm ${der}mm 8mm ${izq}mm;
             box-sizing: border-box;
             font-family: "DejaVu Sans Mono", "Liberation Mono", "Courier New", monospace;
             font-size: ${cuerpo.toFixed(2)}mm;
@@ -4819,6 +4827,20 @@ function SettingsPanel({ catalog, onSave, isOwner }) {
           })}
         </div>
         <p className="text-[10px] c-brown mt-1">Es el ancho del rollo. Si los tickets salen cortados a la derecha, probá con el otro.</p>
+
+        <div className="flex items-center gap-2 mt-3">
+          <span className="text-[11px] c-muted flex-1">
+            Corrimiento del ticket (mm)
+            <span className="block c-brown">Si se corta un borde: positivo lo corre a la derecha, negativo a la izquierda. Cambiá de a 1 e imprimí para ver.</span>
+          </span>
+          <input
+            type="number"
+            step="0.5"
+            value={s.ticketCorrimiento ?? 0}
+            onChange={(e) => set("ticketCorrimiento", Number(e.target.value) || 0)}
+            className="w-20 shrink-0 bg-surface2 rounded-xl px-3 py-2 text-sm font-mono-t outline-none focus-gold c-cream text-right"
+          />
+        </div>
       </div>
 
       <div className="pt-4 mt-4" style={{ borderTop: "1px solid #232735" }}>
