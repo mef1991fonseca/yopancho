@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import {
   ShoppingBag, Plus, Minus, X, ChevronRight, Flame, MapPin,
   Check, Trash2, Pencil, LogOut, Lock, Save, PlusCircle,
-  Search, ArrowLeft, Utensils, Send, RefreshCw, Package, User, Timer, TrendingUp, Download
+  Search, ArrowLeft, Utensils, Send, RefreshCw, Package, User, Timer, TrendingUp, Download, Printer
 } from "lucide-react";
 import { storage, getStorageInitError, authAvailable, adminSignIn, adminSignOut, getAdminSession, onAdminAuthChange, fileStorageAvailable, uploadMediaFile, createStaffUser, ordersApi, argentinaDate } from "./storage";
 
@@ -1762,7 +1762,7 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
         return paso.elegir === 1 ? nombre : `${q}x ${nombre}`;
       })
       .filter(Boolean)
-      .join(", ");
+      .join(" · ");
 
     const grupos = (catalog.modifierGroups || []).filter((g) => (paso.modifierGroupIds || []).includes(g.id));
     const mods = grupos.map((g) => {
@@ -1770,9 +1770,11 @@ function ItemModal({ item, catalog, onClose, onAdd }) {
       return elegidos.length ? `${g.name}: ${elegidos.join(", ")}` : "";
     }).filter(Boolean).join(" · ");
 
-    // "(las 4)" deja claro en la cocina que el aderezo va para todas.
-    const alcance = paso.elegir > 1 ? ` (las ${paso.elegir})` : "";
-    return [elegidas, mods ? `Aderezos${alcance}: ${mods}` : ""].filter(Boolean).join(" — ");
+    // Cada grupo ya viene con su propio nombre ("Aderezos: Mayonesa"), así que
+    // acá solo se agrega a cuántas unidades aplica. Antes se anteponía la
+    // palabra "Aderezos" y salía "Aderezos (las 4): Aderezos: Mayonesa".
+    const alcance = paso.elegir > 1 ? `(para las ${paso.elegir}) ` : "";
+    return [elegidas, mods ? `${alcance}${mods}` : ""].filter(Boolean).join(" · ");
   }).filter(Boolean).join(" · ");
 
   const sizeNote = !canHalf || sizeMode === "entera"
@@ -2515,6 +2517,14 @@ function AdminView({ catalog, orders, ordersLoaded, ordersError, onSaveCatalog, 
   const [unseenCount, setUnseenCount] = useState(0);
   const [toast, setToast] = useState(null);
   const seenIdsRef = useRef(null);
+  // Impresión de tickets. `ticketOrder` es el pedido que se está dibujando para
+  // imprimir; la cola existe porque pueden entrar dos pedidos juntos y
+  // window.print() atiende de a uno.
+  const [ticketOrder, setTicketOrder] = useState(null);
+  const colaImpresionRef = useRef([]);
+  const [autoPrint, setAutoPrint] = useState(() => {
+    try { return localStorage.getItem("yopancho:autoprint") === "1"; } catch (e) { return false; }
+  });
   const toastTimerRef = useRef(null);
 
   const authed = authAvailable ? !!session : pinAuthed;
@@ -2585,13 +2595,61 @@ function AdminView({ catalog, orders, ordersLoaded, ordersError, onSaveCatalog, 
     const fresh = orders.filter((o) => !seenIdsRef.current.has(o.id));
     if (fresh.length > 0) {
       fresh.forEach((o) => seenIdsRef.current.add(o.id));
+      // Hereda la misma guarda que la alarma: seenIdsRef recién se llena
+      // después de la primera carga, así que al entrar al panel no se imprime
+      // el historial entero.
+      if (autoPrint) colaImpresionRef.current.push(...fresh);
       playAlertBeep();
       setUnseenCount((c) => c + fresh.length);
       setToast(fresh[0]);
       clearTimeout(toastTimerRef.current);
       toastTimerRef.current = setTimeout(() => setToast(null), 6000);
     }
-  }, [orders, authed]);
+  }, [orders, authed, autoPrint]);
+
+  // Imprime de a uno: dibuja el ticket, espera a que el navegador lo tenga en
+  // pantalla y recién ahí manda a imprimir.
+  // El ticket se borra de la pantalla cuando el navegador avisa que terminó de
+  // imprimir (afterprint), no con un temporizador: si se borrara antes de que
+  // el navegador capture la página, saldría un papel en blanco. El timeout
+  // largo es solo por si el navegador nunca dispara el evento.
+  useEffect(() => {
+    if (!ticketOrder) return;
+    let vivo = true;
+    const listo = () => { if (vivo) { vivo = false; setTicketOrder(null); } };
+    window.addEventListener("afterprint", listo);
+    const rescate = setTimeout(listo, 10000);
+    const lanzar = setTimeout(() => {
+      try { window.print(); } catch (e) { console.error("[YoPancho] No se pudo imprimir:", e); listo(); }
+    }, 200);
+    return () => {
+      vivo = false;
+      window.removeEventListener("afterprint", listo);
+      clearTimeout(rescate);
+      clearTimeout(lanzar);
+    };
+  }, [ticketOrder]);
+
+  // Va sacando de la cola cuando no hay nada imprimiéndose.
+  useEffect(() => {
+    if (ticketOrder || colaImpresionRef.current.length === 0) return;
+    const t = setTimeout(() => {
+      const siguiente = colaImpresionRef.current.shift();
+      if (siguiente) setTicketOrder(siguiente);
+    }, 600);
+    return () => clearTimeout(t);
+  }, [ticketOrder, orders]);
+
+  function toggleAutoPrint() {
+    setAutoPrint((v) => {
+      const next = !v;
+      try { localStorage.setItem("yopancho:autoprint", next ? "1" : "0"); } catch (e) { /* modo privado */ }
+      // Al encender, la cola arranca vacía: no se imprime nada de lo que ya
+      // estaba en pantalla, solo lo que entre de ahora en más.
+      colaImpresionRef.current = [];
+      return next;
+    });
+  }
 
   function openTab(id) {
     setTab(id);
@@ -2693,6 +2751,7 @@ function AdminView({ catalog, orders, ordersLoaded, ordersError, onSaveCatalog, 
 
   return (
     <div className="pb-16 relative">
+      <TicketPrintable order={ticketOrder} settings={catalog.settings} />
       {toast && (
         <div
           className="fixed top-4 left-4 right-4 max-w-md mx-auto z-50 rounded-2xl px-4 py-3.5 flex items-center gap-3 shadow-2xl cursor-pointer"
@@ -2748,7 +2807,7 @@ function AdminView({ catalog, orders, ordersLoaded, ordersError, onSaveCatalog, 
       </div>
 
       <div className="px-5">
-        {tab === "orders" && <OrdersPanel orders={orders} ordersError={ordersError} onUpdateOrder={handleUpdateOrder} onCancelOrder={handleCancelOrder} onReopenOrder={handleReopenOrder} onRefresh={onRefreshOrders} />}
+        {tab === "orders" && <OrdersPanel orders={orders} ordersError={ordersError} onUpdateOrder={handleUpdateOrder} onCancelOrder={handleCancelOrder} onReopenOrder={handleReopenOrder} onRefresh={onRefreshOrders} onImprimir={setTicketOrder} autoPrint={autoPrint} onToggleAutoPrint={toggleAutoPrint} />}
         {tab === "sales" && <SalesPanel orders={orders} />}
         {tab === "menu" && <MenuEditor catalog={catalog} onSave={onSaveCatalog} />}
         {tab === "promos" && <PromosPanel catalog={catalog} onSave={onSaveCatalog} />}
@@ -2980,7 +3039,7 @@ function SalesPanel({ orders }) {
   );
 }
 
-function OrdersPanel({ orders, ordersError, onUpdateOrder, onCancelOrder, onReopenOrder, onRefresh }) {
+function OrdersPanel({ orders, ordersError, onUpdateOrder, onCancelOrder, onReopenOrder, onRefresh, onImprimir, autoPrint, onToggleAutoPrint }) {
   const [filter, setFilter] = useState("todos");
   const [cancelTarget, setCancelTarget] = useState(null);
   // "Todos" is the working board: cancelled orders live under their own filter
@@ -3000,9 +3059,21 @@ function OrdersPanel({ orders, ordersError, onUpdateOrder, onCancelOrder, onReop
             Cancelados{cancelledCount > 0 ? ` (${cancelledCount})` : ""}
           </button>
         </div>
-        <button onClick={onRefresh} className="shrink-0 ml-2 w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#171a24" }}>
-          <RefreshCw size={13} className="c-tan" />
-        </button>
+        <div className="flex items-center gap-1.5 shrink-0 ml-2">
+          {/* Vive en este navegador y no en la base: solo la compu del mostrador,
+              la que tiene la impresora enchufada, debe imprimir sola. */}
+          <button
+            onClick={onToggleAutoPrint}
+            title="Imprimir solo cada pedido nuevo (solo en esta computadora)"
+            className="px-2.5 h-8 rounded-full text-[10px] font-bold flex items-center gap-1"
+            style={{ background: autoPrint ? "#f2b705" : "#171a24", color: autoPrint ? "#0c0e16" : "#6b7280" }}
+          >
+            <Printer size={12} /> {autoPrint ? "Auto ON" : "Auto OFF"}
+          </button>
+          <button onClick={onRefresh} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#171a24" }}>
+            <RefreshCw size={13} className="c-tan" />
+          </button>
+        </div>
       </div>
 
       {/* If the connection drops or the session expires, the list silently stops
@@ -3021,7 +3092,7 @@ function OrdersPanel({ orders, ordersError, onUpdateOrder, onCancelOrder, onReop
       ) : (
         <div className="space-y-3">
           {visible.map((o) => (
-            <OrderCard key={o.id} order={o} onUpdateOrder={onUpdateOrder} onAskCancel={setCancelTarget} onReopen={onReopenOrder} />
+            <OrderCard key={o.id} order={o} onUpdateOrder={onUpdateOrder} onAskCancel={setCancelTarget} onReopen={onReopenOrder} onImprimir={onImprimir} />
           ))}
         </div>
       )}
@@ -3083,7 +3154,122 @@ function CancelOrderModal({ order, onClose, onConfirm }) {
   );
 }
 
-function OrderCard({ order, onUpdateOrder, onAskCancel, onReopen }) {
+/* ------------------------------------------------------------------ */
+/*  TICKET                                                              */
+/* ------------------------------------------------------------------ */
+// El ticket se imprime desde el navegador: se dibuja escondido en la página y
+// la hoja de estilos de impresión tapa todo lo demás. Con Chrome en modo
+// kiosco la impresión sale sin preguntar nada.
+//
+// El ancho imprimible lo fija el cabezal, no el papel: 48 mm en las de 58 y
+// 72 mm en las de 80. Lo que se dibuje fuera de eso se pierde.
+const TICKET_IMPRIMIBLE = { 58: 48, 80: 72 };
+const TICKET_COLUMNAS = { 58: 32, 80: 48 };
+
+function TicketPrintable({ order, settings }) {
+  if (!order) return null;
+
+  const ancho = Number(settings.ticketAncho) === 80 ? 80 : 58;
+  const imprimible = TICKET_IMPRIMIBLE[ancho];
+  const margen = (ancho - imprimible) / 2;
+  const cuerpo = (imprimible / TICKET_COLUMNAS[ancho]) / 0.6; // monoespaciada: avance ≈ 0.6em
+
+  const fecha = new Date(order.createdAt);
+  const dia = fecha.toLocaleDateString("es-AR", { weekday: "short", day: "2-digit", month: "2-digit" }).replace(/-/g, "/");
+  const hora = fecha.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", hour12: false });
+  const pagos = { efectivo: "Efectivo", transferencia: "Transferencia", tarjeta: "Tarjeta" };
+
+  return (
+    <div id="ticket-print" aria-hidden="true">
+      <style>{`
+        #ticket-print { display: none; }
+        @media print {
+          @page { size: ${ancho}mm auto; margin: 0; }
+          html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; }
+          body * { visibility: hidden !important; }
+          #ticket-print, #ticket-print * { visibility: visible !important; }
+          #ticket-print {
+            display: block !important;
+            position: absolute; left: 0; top: 0;
+            width: ${ancho}mm;
+            padding: ${margen}mm ${margen}mm 8mm;
+            box-sizing: border-box;
+            font-family: "DejaVu Sans Mono", "Liberation Mono", "Courier New", monospace;
+            font-size: ${cuerpo.toFixed(2)}mm;
+            line-height: 1.35;
+            color: #000; background: #fff;
+          }
+          #ticket-print .tk-centro { text-align: center; }
+          #ticket-print .tk-tienda { font-weight: bold; font-size: ${(cuerpo * 1.5).toFixed(2)}mm; letter-spacing: .3mm; }
+          #ticket-print .tk-chico { font-size: ${(cuerpo * 0.85).toFixed(2)}mm; }
+          #ticket-print hr { border: 0; border-top: 0.4mm dashed #000; margin: ${(cuerpo * 0.9).toFixed(2)}mm 0; }
+          #ticket-print .tk-num { font-weight: bold; font-size: ${(cuerpo * 3).toFixed(2)}mm; line-height: 1.1; }
+          #ticket-print .tk-modo {
+            font-weight: bold; font-size: ${(cuerpo * 1.3).toFixed(2)}mm;
+            background: #000; color: #fff; display: inline-block; padding: 0.5mm 2mm; margin-top: 1mm;
+          }
+          #ticket-print .tk-linea { display: flex; gap: 1mm; align-items: baseline; font-weight: bold; }
+          #ticket-print .tk-nom { flex: 1 1 auto; min-width: 0; word-break: break-word; }
+          #ticket-print .tk-pre { flex: 0 0 auto; white-space: nowrap; }
+          #ticket-print .tk-det { padding-left: ${(cuerpo * 2).toFixed(2)}mm; }
+          #ticket-print .tk-det div { word-break: break-word; }
+          #ticket-print .tk-item { margin-bottom: ${(cuerpo * 0.8).toFixed(2)}mm; }
+          #ticket-print .tk-total {
+            display: flex; justify-content: space-between; font-weight: bold;
+            font-size: ${(cuerpo * 1.4).toFixed(2)}mm;
+          }
+          #ticket-print .tk-nota { border: 0.4mm solid #000; padding: 1mm; margin-top: 1mm; font-weight: bold; }
+        }
+      `}</style>
+
+      <div className="tk-centro">
+        <div className="tk-tienda">{(settings.storeName || "").toUpperCase()}</div>
+        <div className="tk-chico">{settings.address}</div>
+        <div className="tk-chico">{settings.city}</div>
+      </div>
+      <hr />
+      <div className="tk-centro">
+        <div className="tk-num">#{order.shortCode}</div>
+        <div className="tk-chico">{dia} · {hora}</div>
+        <div className="tk-modo">{order.mode === "delivery" ? "DELIVERY" : "RETIRO"}</div>
+      </div>
+      <hr />
+      <div>
+        <div><b>{order.customerName}</b></div>
+        <div>{order.phone}</div>
+        {order.mode === "delivery" && order.address && <div>{order.address}</div>}
+      </div>
+      <hr />
+      {(order.items || []).map((l, i) => (
+        <div className="tk-item" key={i}>
+          <div className="tk-linea">
+            <span>{l.qty}x</span>
+            <span className="tk-nom">{l.name}{l.variantLabel ? ` (${l.variantLabel})` : ""}</span>
+            <span className="tk-pre">{money(l.price * l.qty)}</span>
+          </div>
+          {l.note && (
+            <div className="tk-det">
+              {/* La nota viene como una sola línea con separadores; en el papel
+                  cada parte va en su renglón, que es como se lee en la cocina. */}
+              {l.note.split(" · ").map((parte, n) => <div key={n}>{parte}</div>)}
+            </div>
+          )}
+        </div>
+      ))}
+      <hr />
+      <div className="tk-total"><span>TOTAL</span><span>{money(order.total)}</span></div>
+      <div className="tk-chico">Pago: {pagos[order.payment] || order.payment}</div>
+      {order.note && <div className="tk-nota">NOTA: {order.note}</div>}
+      <hr />
+      <div className="tk-centro tk-chico">
+        {order.servedByName && <div>Atendió: {order.servedByName}</div>}
+        <div>www.yopancho.com.ar</div>
+      </div>
+    </div>
+  );
+}
+
+function OrderCard({ order, onUpdateOrder, onAskCancel, onReopen, onImprimir }) {
   const [open, setOpen] = useState(false);
   const status = statusMeta(order.status);
   const time = new Date(order.createdAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
@@ -3126,6 +3312,14 @@ function OrderCard({ order, onUpdateOrder, onAskCancel, onReopen }) {
             {order.note && <div>📝 {order.note}</div>}
             {order.status === "entregado" && order.servedByName && <div>✅ Entregado por: {order.servedByName}</div>}
           </div>
+
+          <button
+            onClick={() => onImprimir(order)}
+            className="w-full mb-3 py-2 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5"
+            style={{ background: "#171a24", color: "#d1d5db" }}
+          >
+            <Printer size={13} /> Imprimir ticket
+          </button>
 
           {order.status === "cancelado" ? (
             <div>
@@ -4606,6 +4800,26 @@ function SettingsPanel({ catalog, onSave, isOwner }) {
       <Field label="Ciudad" value={s.city} onChange={(v) => set("city", v)} />
       <Field label="Bajada del logo (ej: Sandwiches · Burgers · Lomos)" value={s.storeTagline} onChange={(v) => set("storeTagline", v)} />
       <Field label="Horario (ej: 19:30 - 01:00)" value={s.storeHours} onChange={(v) => set("storeHours", v)} />
+
+      <div className="mb-3">
+        <div className="text-[11px] c-muted mb-1.5">Ancho del papel de la impresora de tickets</div>
+        <div className="flex gap-2">
+          {[58, 80].map((a) => {
+            const on = (Number(s.ticketAncho) === 80 ? 80 : 58) === a;
+            return (
+              <button
+                key={a}
+                onClick={() => set("ticketAncho", a)}
+                className="flex-1 py-2.5 rounded-xl text-xs font-bold"
+                style={{ background: on ? "#f2b705" : "#171a24", color: on ? "#0c0e16" : "#d1d5db" }}
+              >
+                {a} mm
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-[10px] c-brown mt-1">Es el ancho del rollo. Si los tickets salen cortados a la derecha, probá con el otro.</p>
+      </div>
 
       <div className="pt-4 mt-4" style={{ borderTop: "1px solid #232735" }}>
         <div className="font-display text-sm c-cream mb-3">Portada (sección grande de arriba del menú)</div>
