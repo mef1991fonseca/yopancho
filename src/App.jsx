@@ -3306,17 +3306,6 @@ function periodoDe(anio, mes) {
   return `${anio}-${String(mes + 1).padStart(2, "0")}`;
 }
 
-// El último período cuyo vencimiento ya pasó. Al activar el aviso se marca
-// como pagado, para que no reclame meses anteriores a la configuración.
-function ultimoPeriodoVencido(diaRaw, hoyISO) {
-  const dia = Math.min(28, Math.max(1, Number(diaRaw) || 1));
-  const [a, m, d] = hoyISO.split("-").map(Number);
-  if (d > dia) return periodoDe(a, m - 1);
-  let mp = m - 2, ap = a;             // el mes anterior, en 0-based
-  if (mp < 0) { mp = 11; ap -= 1; }
-  return periodoDe(ap, mp);
-}
-
 // "pagadoHasta" es el último mes saldado, así que un mes pagado por
 // adelantado también cubre los anteriores. Los períodos son "AAAA-MM": se
 // ordenan bien como texto.
@@ -3331,43 +3320,50 @@ function periodoAnterior(periodo) {
   return m === 1 ? periodoDe(a - 1, 11) : periodoDe(a, m - 2);
 }
 
+// El día 31 no existe en abril ni el 30 en febrero: en los meses cortos el
+// vencimiento cae en el último día. Así se puede configurar "el 31" y que en
+// febrero sea el 28 (o el 29 en bisiesto) sin tener que acordarse.
+function diaDelMes(dia, anio, mes0) {
+  const ultimo = new Date(Date.UTC(anio, mes0 + 1, 0)).getUTCDate();
+  return Math.min(dia, ultimo);
+}
+
+const diaUTC = (iso) => {
+  const [a, m, d] = String(iso).split("-").map(Number);
+  return a && m && d ? Date.UTC(a, m - 1, d) : null;
+};
+
 // Qué hay que avisar hoy, o null si no hay nada.
 //
-// La regla: manda el vencimiento de ESTE mes mientras no haya pasado. Una vez
-// que pasó, queda vencido hasta que alguien lo marque pagado — así un mes
-// impago sigue a la vista en lugar de desaparecer solo. Recién cuando está
-// pagado se empieza a mirar el mes siguiente.
+// Mira el vencimiento de este mes y, si ese ya está saldado o es anterior a
+// la configuración del aviso, el del mes que viene. Un vencimiento que pasó
+// sin pagarse queda a la vista en lugar de desaparecer solo.
 function estadoDelCobro(cobro, hoyISO) {
   if (!cobro || !cobro.activo) return null;
-  const dia = Math.min(28, Math.max(1, Number(cobro.dia) || 1));
+  const dia = Math.min(31, Math.max(1, Number(cobro.dia) || 1));
   const avisarDesde = Math.max(0, Number(cobro.diasAntes ?? 2) || 0);
-  const [a, m, d] = hoyISO.split("-").map(Number);
-  const hoy = Date.UTC(a, m - 1, d);
-  const dias = (hasta) => Math.round((hasta - hoy) / 86400000);
-  const fmt = (mes1) => `${String(dia).padStart(2, "0")}/${String(mes1).padStart(2, "0")}`;
+  const [a, m] = hoyISO.split("-").map(Number);
+  const hoy = diaUTC(hoyISO);
+  // Desde cuándo el aviso se hace cargo. Sin esto, configurarlo un día 27
+  // con vencimiento el 1 arrancaba reclamando un mes que nadie debía.
+  const desde = cobro.desde ? diaUTC(cobro.desde) : null;
 
-  const venceEste = Date.UTC(a, m - 1, dia);
-  const periodoEste = periodoDe(a, m - 1);
+  const meses = [[a, m - 1], m === 12 ? [a + 1, 0] : [a, m]];
+  for (const [anio, mes0] of meses) {
+    const d = diaDelMes(dia, anio, mes0);
+    const vence = Date.UTC(anio, mes0, d);
+    const periodo = periodoDe(anio, mes0);
+    if (desde !== null && vence < desde) continue;          // anterior al aviso
+    if (pagadoAlMenosHasta(cobro.pagadoHasta, periodo)) continue;
 
-  if (hoy <= venceEste) {
-    if (pagadoAlMenosHasta(cobro.pagadoHasta, periodoEste)) return null;
-    const faltan = dias(venceEste);
-    if (faltan > avisarDesde) return null;
-    return { faltan, periodo: periodoEste, vencido: false, fecha: fmt(m) };
+    const faltan = Math.round((vence - hoy) / 86400000);
+    const fecha = `${String(d).padStart(2, "0")}/${String(mes0 + 1).padStart(2, "0")}`;
+    if (faltan < 0) return { faltan, periodo, vencido: true, fecha };
+    // Este mes es el más cercano: si todavía falta mucho, no hay nada que
+    // decir, y el mes siguiente falta más todavía.
+    return faltan > avisarDesde ? null : { faltan, periodo, vencido: false, fecha };
   }
-
-  if (!pagadoAlMenosHasta(cobro.pagadoHasta, periodoEste)) {
-    return { faltan: dias(venceEste), periodo: periodoEste, vencido: true, fecha: fmt(m) };
-  }
-
-  let mesS = m, anioS = a;            // m (1-based) es el mes siguiente en 0-based
-  if (mesS > 11) { mesS = 0; anioS += 1; }
-  const venceSig = Date.UTC(anioS, mesS, dia);
-  const periodoSig = periodoDe(anioS, mesS);
-  if (pagadoAlMenosHasta(cobro.pagadoHasta, periodoSig)) return null;
-  const faltan = dias(venceSig);
-  if (faltan > avisarDesde) return null;
-  return { faltan, periodo: periodoSig, vencido: false, fecha: fmt(mesS + 1) };
+  return null;
 }
 
 function AvisoDeCobro({ settings, onSave }) {
@@ -5280,10 +5276,10 @@ function SettingsPanel({ catalog, onSave, isOwner }) {
                 <button
                   onClick={() => {
                     const activar = !c.activo;
-                    // Al activarlo se da por saldado lo ya vencido: si no, el
-                    // aviso arrancaría reclamando meses previos a existir.
-                    if (activar && !c.pagadoHasta) {
-                      set("cobro", { ...c, activo: true, pagadoHasta: ultimoPeriodoVencido(c.dia ?? 1, argentinaDate()) });
+                    // Queda anotado desde cuándo corre el aviso, para que no
+                    // reclame vencimientos anteriores a su propia existencia.
+                    if (activar && !c.desde) {
+                      set("cobro", { ...c, activo: true, desde: argentinaDate() });
                     } else {
                       setC("activo", activar);
                     }
@@ -5298,11 +5294,14 @@ function SettingsPanel({ catalog, onSave, isOwner }) {
                   <>
                     <div className="flex gap-2 mb-3">
                       <label className="flex-1">
-                        <span className="block text-[11px] c-muted mb-1">Día de vencimiento</span>
+                        <span className="block text-[11px] c-muted mb-1">
+                          Día de vencimiento
+                          <span className="block c-brown">En los meses más cortos cae el último día.</span>
+                        </span>
                         <input
-                          type="number" min="1" max="28"
+                          type="number" min="1" max="31"
                           value={c.dia ?? 1}
-                          onChange={(e) => setC("dia", Math.min(28, Math.max(1, Number(e.target.value) || 1)))}
+                          onChange={(e) => setC("dia", Math.min(31, Math.max(1, Number(e.target.value) || 1)))}
                           className="w-full bg-surface2 rounded-xl px-3 py-2 text-sm font-mono-t outline-none focus-gold c-cream"
                         />
                       </label>
