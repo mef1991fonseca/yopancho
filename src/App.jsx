@@ -4847,8 +4847,14 @@ function StaffEditor({ staff, onChange, isOwner }) {
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState(null); // { ok: bool, msg: string }
 
+  // Ojo: esto borra el NOMBRE, no la cuenta. Quien figuraba acá sigue
+  // pudiendo entrar al panel con su email y su contraseña.
   function remove(email) {
-    onChange(staff.filter((s) => s.email !== email));
+    const quien = (staff.find((s) => s.email === email) || {}).name || email;
+    const ok = window.confirm(
+      `Esto borra el nombre de ${quien}, pero NO le saca el acceso: ` +
+      `va a poder seguir entrando al panel con ${email}.\n\n¿Borrar el nombre igual?`);
+    if (ok) onChange(staff.filter((s) => s.email !== email));
   }
 
   // Owner flow: actually creates the login account (via the Edge Function),
@@ -4888,6 +4894,10 @@ function StaffEditor({ staff, onChange, isOwner }) {
     <div>
       {staff.length > 0 && (
         <div className="space-y-1.5 mb-3">
+          <div className="text-[10px] c-brown">
+            Nombres cargados. No es la lista de cuentas que pueden entrar: una cuenta
+            creada de otra forma no aparece acá, y la cruz borra el nombre, no el acceso.
+          </div>
           {staff.map((s) => (
             <div key={s.email} className="flex items-center justify-between px-3 py-2 rounded-xl" style={{ background: "#171a24" }}>
               <div>
@@ -4974,10 +4984,12 @@ const fechaCorta = (iso) =>
 
 // Quién entra al panel. Solo lo ve el dueño: la pantalla lo esconde y la
 // función de la base lo rechaza, así que no alcanza con abrir el navegador.
-function AccesosPanel({ staff }) {
+function AccesosPanel({ staff, onNombre }) {
   const [filas, setFilas] = useState(null);
   const [error, setError] = useState("");
   const [cargando, setCargando] = useState(false);
+  const [editando, setEditando] = useState("");   // email en edición
+  const [borrador, setBorrador] = useState("");
 
   const nombreDe = (email) => {
     const m = (staff || []).find(
@@ -4998,6 +5010,12 @@ function AccesosPanel({ staff }) {
 
   useEffect(() => { if (accesosDisponibles) cargar(); }, [cargar]);
 
+  function guardarNombre(email) {
+    const limpio = borrador.trim();
+    if (limpio) onNombre(email, limpio);
+    setEditando(""); setBorrador("");
+  }
+
   if (!accesosDisponibles) return null;
 
   return (
@@ -5017,6 +5035,10 @@ function AccesosPanel({ staff }) {
         Quien deja la sesión abierta sigue trabajando sin volver a ingresar, así que la
         segunda fecha es la que dice si de verdad la está usando.
       </p>
+      <p className="text-[11px] c-muted mb-3 leading-relaxed">
+        Esta es la lista real de cuentas que pueden entrar. Acá podés ponerle nombre a
+        cualquiera para que aparezca con su nombre en Ventas y en los tickets.
+      </p>
 
       {error && (
         <div className="text-[11px] p-2.5 rounded-xl mb-2" style={{ background: "#450a0a", color: "#fca5a5" }}>
@@ -5034,6 +5056,7 @@ function AccesosPanel({ staff }) {
           const hayActividad = !!f.ultima_actividad;
           const dias = hayActividad ? actividad.dias : ingreso.dias;
           const color = dias === null ? "#9ca3af" : dias <= 2 ? "#4ade80" : dias <= 10 ? "#fbbf24" : "#f87171";
+          const sinNombre = nombreDe(f.email) === f.email;
           return (
             <div key={f.email} className="p-2.5 rounded-xl" style={{ background: "#171a24" }}>
               <div className="flex items-center justify-between gap-2">
@@ -5057,10 +5080,32 @@ function AccesosPanel({ staff }) {
                   ? `Activo: ${fechaCorta(f.ultima_actividad)}`
                   : "Sin sesión abierta en este momento"}
               </div>
-              {nombreDe(f.email) === f.email && (
-                <div className="text-[10px] c-brown mt-1">
-                  Sin nombre cargado — ponelo arriba, en Personal, para verlo acá.
+              {editando === f.email ? (
+                <div className="flex gap-1.5 mt-2">
+                  <input
+                    autoFocus
+                    value={borrador}
+                    onChange={(e) => setBorrador(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") guardarNombre(f.email); }}
+                    placeholder="Ej: Fran"
+                    className="flex-1 bg-surface2 rounded-lg px-2.5 py-1.5 text-xs ph-muted outline-none focus-gold c-cream"
+                  />
+                  <button onClick={() => guardarNombre(f.email)}
+                          className="px-2.5 rounded-lg text-[11px] font-bold"
+                          style={{ background: "#f2b705", color: "#0c0e16" }}>Guardar</button>
+                  <button onClick={() => setEditando("")}
+                          className="px-2 rounded-lg c-muted" style={{ background: "#0c0e16" }}>
+                    <X size={12} />
+                  </button>
                 </div>
+              ) : (
+                <button
+                  onClick={() => { setEditando(f.email); setBorrador(sinNombre ? "" : nombreDe(f.email)); }}
+                  className="text-[10px] mt-1 underline"
+                  style={{ color: sinNombre ? "#fbbf24" : "#6b7280" }}
+                >
+                  {sinNombre ? "Sin nombre — ponerle uno" : "Cambiar el nombre"}
+                </button>
               )}
             </div>
           );
@@ -5207,7 +5252,14 @@ function SettingsPanel({ catalog, onSave, isOwner }) {
       </div>
       <StaffEditor staff={s.staff || []} onChange={(v) => set("staff", v)} isOwner={isOwner} />
 
-      {isOwner && <AccesosPanel staff={s.staff || []} />}
+      {isOwner && (
+        <AccesosPanel
+          staff={s.staff || []}
+          onNombre={(email, name) =>
+            set("staff", [...(s.staff || []).filter((x) => (x.email || "").toLowerCase() !== email.toLowerCase()),
+                          { email, name }])}
+        />
+      )}
 
       {/* El cobro del sistema lo configura ALTech, no el local: solo lo ve la
           cuenta con rol de dueño. El aviso en sí lo ven todos los que entran
