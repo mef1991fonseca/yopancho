@@ -2779,6 +2779,8 @@ function AdminView({ catalog, orders, ordersLoaded, ordersError, onSaveCatalog, 
         </button>
       </div>
 
+      <AvisoDeCobro settings={catalog.settings} onSave={(s) => onSaveCatalog({ ...catalog, settings: s })} />
+
       <div className="flex gap-2 px-5 py-3 overflow-x-auto no-scrollbar">
         {[
           { id: "orders", label: "Pedidos", icon: Package },
@@ -3285,6 +3287,163 @@ function TicketPrintable({ order, settings }) {
       <div className="tk-centro tk-chico">
         {order.servedByName && <div>Atendió: {order.servedByName}</div>}
         <div>www.yopancho.com.ar</div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  AVISO DE VENCIMIENTO DEL SERVICIO                                   */
+/* ------------------------------------------------------------------ */
+// Recordatorio del pago mensual del sistema, dentro del panel. Nunca aparece
+// en la tienda: ningún cliente ve esto.
+//
+// Las fechas se calculan en hora de Salta y no con la del navegador, porque
+// una compu mal configurada haría aparecer el aviso un día antes o después.
+
+// Período al que corresponde un pago, como "2026-11".
+function periodoDe(anio, mes) {
+  return `${anio}-${String(mes + 1).padStart(2, "0")}`;
+}
+
+// El último período cuyo vencimiento ya pasó. Al activar el aviso se marca
+// como pagado, para que no reclame meses anteriores a la configuración.
+function ultimoPeriodoVencido(diaRaw, hoyISO) {
+  const dia = Math.min(28, Math.max(1, Number(diaRaw) || 1));
+  const [a, m, d] = hoyISO.split("-").map(Number);
+  if (d > dia) return periodoDe(a, m - 1);
+  let mp = m - 2, ap = a;             // el mes anterior, en 0-based
+  if (mp < 0) { mp = 11; ap -= 1; }
+  return periodoDe(ap, mp);
+}
+
+// "pagadoHasta" es el último mes saldado, así que un mes pagado por
+// adelantado también cubre los anteriores. Los períodos son "AAAA-MM": se
+// ordenan bien como texto.
+function pagadoAlMenosHasta(pagadoHasta, periodo) {
+  return typeof pagadoHasta === "string" && pagadoHasta >= periodo;
+}
+
+// Un mes atrás, para deshacer un "Ya lo pagué" apretado de más.
+function periodoAnterior(periodo) {
+  const [a, m] = String(periodo).split("-").map(Number);
+  if (!a || !m) return "";
+  return m === 1 ? periodoDe(a - 1, 11) : periodoDe(a, m - 2);
+}
+
+// Qué hay que avisar hoy, o null si no hay nada.
+//
+// La regla: manda el vencimiento de ESTE mes mientras no haya pasado. Una vez
+// que pasó, queda vencido hasta que alguien lo marque pagado — así un mes
+// impago sigue a la vista en lugar de desaparecer solo. Recién cuando está
+// pagado se empieza a mirar el mes siguiente.
+function estadoDelCobro(cobro, hoyISO) {
+  if (!cobro || !cobro.activo) return null;
+  const dia = Math.min(28, Math.max(1, Number(cobro.dia) || 1));
+  const avisarDesde = Math.max(0, Number(cobro.diasAntes ?? 2) || 0);
+  const [a, m, d] = hoyISO.split("-").map(Number);
+  const hoy = Date.UTC(a, m - 1, d);
+  const dias = (hasta) => Math.round((hasta - hoy) / 86400000);
+  const fmt = (mes1) => `${String(dia).padStart(2, "0")}/${String(mes1).padStart(2, "0")}`;
+
+  const venceEste = Date.UTC(a, m - 1, dia);
+  const periodoEste = periodoDe(a, m - 1);
+
+  if (hoy <= venceEste) {
+    if (pagadoAlMenosHasta(cobro.pagadoHasta, periodoEste)) return null;
+    const faltan = dias(venceEste);
+    if (faltan > avisarDesde) return null;
+    return { faltan, periodo: periodoEste, vencido: false, fecha: fmt(m) };
+  }
+
+  if (!pagadoAlMenosHasta(cobro.pagadoHasta, periodoEste)) {
+    return { faltan: dias(venceEste), periodo: periodoEste, vencido: true, fecha: fmt(m) };
+  }
+
+  let mesS = m, anioS = a;            // m (1-based) es el mes siguiente en 0-based
+  if (mesS > 11) { mesS = 0; anioS += 1; }
+  const venceSig = Date.UTC(anioS, mesS, dia);
+  const periodoSig = periodoDe(anioS, mesS);
+  if (pagadoAlMenosHasta(cobro.pagadoHasta, periodoSig)) return null;
+  const faltan = dias(venceSig);
+  if (faltan > avisarDesde) return null;
+  return { faltan, periodo: periodoSig, vencido: false, fecha: fmt(mesS + 1) };
+}
+
+function AvisoDeCobro({ settings, onSave }) {
+  const cobro = settings.cobro;
+  const [ocultoHoy, setOcultoHoy] = useState(false);
+  const hoy = argentinaDate();
+  const estado = estadoDelCobro(cobro, hoy);
+
+  useEffect(() => {
+    try { setOcultoHoy(localStorage.getItem("yopancho:avisoCobro") === hoy); } catch (e) { /* modo privado */ }
+  }, [hoy]);
+
+  if (!estado || ocultoHoy) return null;
+
+  const importe = Number(cobro.importe) || 0;
+  const texto = estado.vencido
+    ? (estado.faltan === 0 ? "El servicio del mes venció hoy" : `El servicio del mes venció el ${estado.fecha}`)
+    : estado.faltan === 0
+      ? `El servicio del mes vence hoy (${estado.fecha})`
+      : `El servicio del mes vence el ${estado.fecha} — ${estado.faltan === 1 ? "falta 1 día" : `faltan ${estado.faltan} días`}`;
+
+  function ocultar() {
+    try { localStorage.setItem("yopancho:avisoCobro", hoy); } catch (e) { /* modo privado */ }
+    setOcultoHoy(true);
+  }
+
+  async function marcarPagado() {
+    await onSave({ ...settings, cobro: { ...cobro, pagadoHasta: estado.periodo } });
+  }
+
+  const wsp = (cobro.whatsapp || "").replace(/\D/g, "");
+
+  return (
+    <div
+      className="mx-5 mt-4 mb-1 p-3.5 rounded-2xl"
+      style={{
+        background: estado.vencido ? "#450a0a" : "#422006",
+        border: `1px solid ${estado.vencido ? "#7f1d1d" : "#78541a"}`,
+      }}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="font-bold text-sm" style={{ color: estado.vencido ? "#fca5a5" : "#fbbf24" }}>
+            {texto}
+          </div>
+          {importe > 0 && (
+            <div className="text-xs c-tan2 mt-0.5 font-mono-t">{money(importe)}</div>
+          )}
+          {cobro.mensaje && (
+            <div className="text-[11px] c-tan mt-1 whitespace-pre-line break-words">{cobro.mensaje}</div>
+          )}
+        </div>
+        <button onClick={ocultar} aria-label="Ocultar por hoy" className="shrink-0 c-muted">
+          <X size={15} />
+        </button>
+      </div>
+
+      <div className="flex gap-2 mt-2.5">
+        <button
+          onClick={marcarPagado}
+          className="flex-1 py-2 rounded-xl text-[11px] font-bold"
+          style={{ background: "#f2b705", color: "#0c0e16" }}
+        >
+          Ya lo pagué
+        </button>
+        {wsp && (
+          <a
+            href={`https://wa.me/${wsp}?text=${encodeURIComponent("Hola! Te hago la transferencia del servicio de este mes.")}`}
+            target="_blank"
+            rel="noreferrer"
+            className="flex-1 py-2 rounded-xl text-[11px] font-bold text-center"
+            style={{ background: "#171a24", color: "#d1d5db" }}
+          >
+            Avisar por WhatsApp
+          </a>
+        )}
       </div>
     </div>
   );
@@ -4933,6 +5092,119 @@ function SettingsPanel({ catalog, onSave, isOwner }) {
         </div>
       </div>
       <StaffEditor staff={s.staff || []} onChange={(v) => set("staff", v)} isOwner={isOwner} />
+
+      {/* El cobro del sistema lo configura ALTech, no el local: solo lo ve la
+          cuenta con rol de dueño. El aviso en sí lo ven todos los que entran
+          al panel, que es lo que se pidió. */}
+      {isOwner && (
+        <div className="mt-6 p-4 rounded-2xl" style={{ background: "#11131b", border: "1px solid #422006" }}>
+          <div className="font-bold text-sm c-gold mb-1">💳 Aviso de vencimiento del servicio</div>
+          <p className="text-[11px] c-muted mb-3 leading-relaxed">
+            Aparece en el panel los días previos al vencimiento. Lo ven todos los que entran al panel.
+            Nunca se muestra en la tienda y no bloquea nada.
+          </p>
+
+          {(() => {
+            const c = s.cobro || {};
+            const setC = (campo, valor) => set("cobro", { ...c, [campo]: valor });
+            return (
+              <>
+                <button
+                  onClick={() => {
+                    const activar = !c.activo;
+                    // Al activarlo se da por saldado lo ya vencido: si no, el
+                    // aviso arrancaría reclamando meses previos a existir.
+                    if (activar && !c.pagadoHasta) {
+                      set("cobro", { ...c, activo: true, pagadoHasta: ultimoPeriodoVencido(c.dia ?? 1, argentinaDate()) });
+                    } else {
+                      setC("activo", activar);
+                    }
+                  }}
+                  className="w-full py-2.5 rounded-xl text-xs font-bold mb-3"
+                  style={{ background: c.activo ? "#f2b705" : "#171a24", color: c.activo ? "#0c0e16" : "#9ca3af" }}
+                >
+                  {c.activo ? "✓ Aviso activado" : "Aviso desactivado — tocá para activar"}
+                </button>
+
+                {c.activo && (
+                  <>
+                    <div className="flex gap-2 mb-3">
+                      <label className="flex-1">
+                        <span className="block text-[11px] c-muted mb-1">Día de vencimiento</span>
+                        <input
+                          type="number" min="1" max="28"
+                          value={c.dia ?? 1}
+                          onChange={(e) => setC("dia", Math.min(28, Math.max(1, Number(e.target.value) || 1)))}
+                          className="w-full bg-surface2 rounded-xl px-3 py-2 text-sm font-mono-t outline-none focus-gold c-cream"
+                        />
+                      </label>
+                      <label className="flex-1">
+                        <span className="block text-[11px] c-muted mb-1">Avisar con … días</span>
+                        <input
+                          type="number" min="0" max="15"
+                          value={c.diasAntes ?? 2}
+                          onChange={(e) => setC("diasAntes", Math.max(0, Number(e.target.value) || 0))}
+                          className="w-full bg-surface2 rounded-xl px-3 py-2 text-sm font-mono-t outline-none focus-gold c-cream"
+                        />
+                      </label>
+                    </div>
+
+                    <label className="block mb-3">
+                      <span className="block text-[11px] c-muted mb-1">
+                        Importe
+                        <span className="block c-brown">Dejalo en 0 para no mostrarlo. Lo verían también los encargados.</span>
+                      </span>
+                      <input
+                        type="number" min="0"
+                        value={c.importe ?? 0}
+                        onChange={(e) => setC("importe", Number(e.target.value) || 0)}
+                        className="w-full bg-surface2 rounded-xl px-3 py-2 text-sm font-mono-t outline-none focus-gold c-cream"
+                      />
+                    </label>
+
+                    <Field
+                      label="WhatsApp para el botón de aviso (solo números con código de país)"
+                      value={c.whatsapp || ""}
+                      onChange={(v) => setC("whatsapp", v)}
+                      placeholder="5493875000000"
+                    />
+
+                    <label className="block mb-3">
+                      <span className="block text-[11px] c-muted mb-1">Texto adicional (datos de transferencia, alias…)</span>
+                      <textarea
+                        rows="2"
+                        value={c.mensaje || ""}
+                        onChange={(e) => setC("mensaje", e.target.value)}
+                        placeholder="Alias: altech.sistemas"
+                        className="w-full bg-surface2 rounded-xl px-3 py-2 text-sm ph-muted outline-none focus-gold c-cream"
+                      />
+                    </label>
+
+                    <div className="text-[11px] c-muted flex items-center justify-between gap-2">
+                      <span>
+                        {c.pagadoHasta
+                          ? <>Último período marcado como pagado: <b className="c-gold">{c.pagadoHasta}</b></>
+                          : "Todavía no se marcó ningún pago."}
+                      </span>
+                      {/* Cualquiera que entra al panel puede marcar "Ya lo
+                          pagué": el dueño tiene que poder volver atrás. */}
+                      {c.pagadoHasta && (
+                        <button
+                          onClick={() => setC("pagadoHasta", periodoAnterior(c.pagadoHasta))}
+                          className="shrink-0 px-2 py-1 rounded-lg c-tan2"
+                          style={{ background: "#171a24" }}
+                        >
+                          Volver un mes
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </>
+            );
+          })()}
+        </div>
+      )}
 
       <button
         disabled={!dirty}
