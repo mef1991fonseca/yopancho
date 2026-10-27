@@ -2779,7 +2779,7 @@ function AdminView({ catalog, orders, ordersLoaded, ordersError, onSaveCatalog, 
         </button>
       </div>
 
-      <AvisoDeCobro settings={catalog.settings} onSave={(s) => onSaveCatalog({ ...catalog, settings: s })} />
+      <AvisoDeCobro settings={catalog.settings} quien={currentStaffEmail} onSave={(s) => onSaveCatalog({ ...catalog, settings: s })} />
 
       <div className="flex gap-2 px-5 py-3 overflow-x-auto no-scrollbar">
         {[
@@ -3366,15 +3366,20 @@ function estadoDelCobro(cobro, hoyISO) {
   return null;
 }
 
-function AvisoDeCobro({ settings, onSave }) {
+function AvisoDeCobro({ settings, quien, onSave }) {
   const cobro = settings.cobro;
   const [ocultoHoy, setOcultoHoy] = useState(false);
   const hoy = argentinaDate();
   const estado = estadoDelCobro(cobro, hoy);
 
+  // Esconder el aviso es decisión de cada uno, no del navegador: en la PC del
+  // local entran varios con la misma máquina, y que uno lo cierre no puede
+  // dejar a los demás sin verlo.
+  const clave = `yopancho:avisoCobro:${quien || "anon"}`;
+
   useEffect(() => {
-    try { setOcultoHoy(localStorage.getItem("yopancho:avisoCobro") === hoy); } catch (e) { /* modo privado */ }
-  }, [hoy]);
+    try { setOcultoHoy(localStorage.getItem(clave) === hoy); } catch (e) { /* modo privado */ }
+  }, [hoy, clave]);
 
   if (!estado || ocultoHoy) return null;
 
@@ -3386,7 +3391,7 @@ function AvisoDeCobro({ settings, onSave }) {
       : `El servicio del mes vence el ${estado.fecha} — ${estado.faltan === 1 ? "falta 1 día" : `faltan ${estado.faltan} días`}`;
 
   function ocultar() {
-    try { localStorage.setItem("yopancho:avisoCobro", hoy); } catch (e) { /* modo privado */ }
+    try { localStorage.setItem(clave, hoy); } catch (e) { /* modo privado */ }
     setOcultoHoy(true);
   }
 
