@@ -173,6 +173,23 @@ export async function createStaffUser(email, password, name) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  ACCESOS AL PANEL                                                   */
+/* ------------------------------------------------------------------ */
+// Quién entra al panel y cuándo. Los datos viven en auth.users, que el
+// cliente no puede leer: los sirve la función accesos_del_personal(), que
+// corre con permisos elevados y rechaza a cualquiera que no tenga rol de
+// dueño. El filtro de verdad está ahí, no en la pantalla.
+
+export const accesosDisponibles = !!supabase;
+
+export async function accesosDelPersonal() {
+  if (!supabase) throw new Error("Supabase no está configurado.");
+  const { data, error } = await supabase.rpc("accesos_del_personal");
+  if (error) throw error;
+  return data || [];
+}
+
+/* ------------------------------------------------------------------ */
 /*  FILE STORAGE (photos & video for promos)                           */
 /* ------------------------------------------------------------------ */
 // Uploads a real file to a Supabase Storage bucket ("media") and returns its

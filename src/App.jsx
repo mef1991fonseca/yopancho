@@ -4,7 +4,7 @@ import {
   Check, Trash2, Pencil, LogOut, Lock, Save, PlusCircle,
   Search, ArrowLeft, Utensils, Send, RefreshCw, Package, User, Timer, TrendingUp, Download, Printer
 } from "lucide-react";
-import { storage, getStorageInitError, authAvailable, adminSignIn, adminSignOut, getAdminSession, onAdminAuthChange, fileStorageAvailable, uploadMediaFile, createStaffUser, ordersApi, argentinaDate } from "./storage";
+import { storage, getStorageInitError, authAvailable, adminSignIn, adminSignOut, getAdminSession, onAdminAuthChange, fileStorageAvailable, uploadMediaFile, createStaffUser, ordersApi, argentinaDate, accesosDelPersonal, accesosDisponibles } from "./storage";
 
 /* ------------------------------------------------------------------ */
 /*  DEFAULT CATALOG — seeded once into shared storage on first load    */
@@ -4956,6 +4956,120 @@ function StaffEditor({ staff, onChange, isOwner }) {
   );
 }
 
+// Cuánto hace de una fecha, en palabras. Devuelve también los días para
+// poder pintar en rojo lo que lleva mucho tiempo sin moverse.
+function haceCuanto(iso) {
+  if (!iso) return { texto: "nunca", dias: null };
+  const dias = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  if (dias <= 0) return { texto: "hoy", dias: 0 };
+  if (dias === 1) return { texto: "ayer", dias: 1 };
+  return { texto: `hace ${dias} días`, dias };
+}
+
+const fechaCorta = (iso) =>
+  !iso ? "—" : new Date(iso).toLocaleString("es-AR", {
+    timeZone: "America/Argentina/Salta",
+    day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+  }).replace(",", " ·");
+
+// Quién entra al panel. Solo lo ve el dueño: la pantalla lo esconde y la
+// función de la base lo rechaza, así que no alcanza con abrir el navegador.
+function AccesosPanel({ staff }) {
+  const [filas, setFilas] = useState(null);
+  const [error, setError] = useState("");
+  const [cargando, setCargando] = useState(false);
+
+  const nombreDe = (email) => {
+    const m = (staff || []).find(
+      (x) => (x.email || "").toLowerCase() === (email || "").toLowerCase());
+    return (m && m.name) || email;
+  };
+
+  const cargar = useCallback(async () => {
+    setCargando(true); setError("");
+    try {
+      setFilas(await accesosDelPersonal());
+    } catch (e) {
+      setError(e && e.message ? e.message : "No se pudieron leer los accesos.");
+    } finally {
+      setCargando(false);
+    }
+  }, []);
+
+  useEffect(() => { if (accesosDisponibles) cargar(); }, [cargar]);
+
+  if (!accesosDisponibles) return null;
+
+  return (
+    <div className="mt-6 p-4 rounded-2xl" style={{ background: "#11131b", border: "1px solid #1f2430" }}>
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <div className="font-bold text-sm c-gold">👁 Accesos al panel</div>
+        <button onClick={cargar} disabled={cargando}
+                className="px-2.5 py-1 rounded-lg text-[11px] c-tan2 disabled:opacity-40"
+                style={{ background: "#171a24" }}>
+          <RefreshCw size={11} className="inline mr-1" />
+          {cargando ? "..." : "Actualizar"}
+        </button>
+      </div>
+      <p className="text-[11px] c-muted mb-3 leading-relaxed">
+        Solo vos ves esta lista. <b className="c-tan2">Ingresó</b> es la última vez que
+        puso usuario y clave; <b className="c-tan2">activo</b>, la última vez que usó la app.
+        Quien deja la sesión abierta sigue trabajando sin volver a ingresar, así que la
+        segunda fecha es la que dice si de verdad la está usando.
+      </p>
+
+      {error && (
+        <div className="text-[11px] p-2.5 rounded-xl mb-2" style={{ background: "#450a0a", color: "#fca5a5" }}>
+          {error}
+        </div>
+      )}
+      {filas === null && !error && <div className="text-[11px] c-muted">Leyendo…</div>}
+
+      <div className="space-y-2">
+        {(filas || []).map((f) => {
+          const ingreso = haceCuanto(f.ultimo_ingreso);
+          const actividad = haceCuanto(f.ultima_actividad);
+          // Con la sesión caída no hay actividad que mostrar: el ingreso
+          // es todo lo que se sabe.
+          const hayActividad = !!f.ultima_actividad;
+          const dias = hayActividad ? actividad.dias : ingreso.dias;
+          const color = dias === null ? "#9ca3af" : dias <= 2 ? "#4ade80" : dias <= 10 ? "#fbbf24" : "#f87171";
+          return (
+            <div key={f.email} className="p-2.5 rounded-xl" style={{ background: "#171a24" }}>
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="text-sm font-bold c-cream break-words">{nombreDe(f.email)}</span>
+                  {f.rol === "owner" && (
+                    <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded-md align-middle"
+                          style={{ background: "#f2b705", color: "#0c0e16" }}>DUEÑO</span>
+                  )}
+                </div>
+                <span className="shrink-0 text-[11px] font-bold" style={{ color }}>
+                  {hayActividad ? actividad.texto : ingreso.texto}
+                </span>
+              </div>
+              <div className="text-[10px] c-muted mt-1 font-mono-t">
+                Ingresó: {fechaCorta(f.ultimo_ingreso)}
+                {ingreso.dias !== null && ` (${ingreso.texto})`}
+              </div>
+              <div className="text-[10px] c-muted font-mono-t">
+                {hayActividad
+                  ? `Activo: ${fechaCorta(f.ultima_actividad)}`
+                  : "Sin sesión abierta en este momento"}
+              </div>
+              {nombreDe(f.email) === f.email && (
+                <div className="text-[10px] c-brown mt-1">
+                  Sin nombre cargado — ponelo arriba, en Personal, para verlo acá.
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function SettingsPanel({ catalog, onSave, isOwner }) {
   const [s, setS] = useState(catalog.settings);
   const [dirty, setDirty] = useState(false);
@@ -5092,6 +5206,8 @@ function SettingsPanel({ catalog, onSave, isOwner }) {
         </div>
       </div>
       <StaffEditor staff={s.staff || []} onChange={(v) => set("staff", v)} isOwner={isOwner} />
+
+      {isOwner && <AccesosPanel staff={s.staff || []} />}
 
       {/* El cobro del sistema lo configura ALTech, no el local: solo lo ve la
           cuenta con rol de dueño. El aviso en sí lo ven todos los que entran
