@@ -26,6 +26,8 @@ const DEFAULT_CATALOG = {
     accentNote: "Todo sale con papas",
     storeTagline: "Sandwiches · Burgers · Lomos",
     storeHours: "19:30 - 01:00",
+    developerName: "ALTech",
+    developerUrl: "",
     heroBadgeText: "⭐ Más pedido de Salta",
     heroHeadlinePre: "LOS MEJORES",
     heroHeadlineHighlight: "LOMOS Y SÁNDWICHES",
@@ -1354,6 +1356,16 @@ function ShopView({ catalog, onGoAdmin }) {
         </div>
       </div>
 
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-10 pb-8"
+           style={{ borderTop: "1px solid #171a24" }}>
+        <div className="text-[11px] c-muted text-center leading-relaxed">
+          <div className="font-bold c-tan2">{catalog.settings.storeName}</div>
+          <div>{catalog.settings.address} · {catalog.settings.city}</div>
+          <div>{catalog.settings.storeHours}</div>
+        </div>
+        <FirmaDeAutor settings={catalog.settings} className="mt-3" />
+      </div>
+
       {/* Floating cart bar — mobile/tablet only, desktop uses the sidebar */}
       {cartCount > 0 && !drawerOpen && (
         <button
@@ -1506,6 +1518,25 @@ function OrderSidebar({ cart, total, mode, onModeChange, onChangeQty, onRemove, 
           Continuar pedido
         </button>
       </div>
+    </div>
+  );
+}
+
+// La firma de quien hizo el sistema. Se configura en Ajustes y si queda
+// vacía no se dibuja nada: el local puede ser de otro cliente mañana.
+function FirmaDeAutor({ settings, className = "", align = "center" }) {
+  const nombre = (settings.developerName || "").trim();
+  if (!nombre) return null;
+  const url = (settings.developerUrl || "").trim();
+  const texto = `Sistema desarrollado por ${nombre}`;
+  return (
+    <div className={`text-[10px] c-brown ${align === "center" ? "text-center" : ""} ${className}`}>
+      {url ? (
+        <a href={/^https?:\/\//i.test(url) ? url : `https://${url}`}
+           target="_blank" rel="noreferrer" className="underline">
+          {texto}
+        </a>
+      ) : texto}
     </div>
   );
 }
@@ -2744,6 +2775,7 @@ function AdminView({ catalog, orders, ordersLoaded, ordersError, onSaveCatalog, 
           {!authAvailable && (
             <p className="text-[10px] c-brown text-center mt-6">PIN de demo: {ADMIN_PIN} — esto es un modo sin base de datos conectada; configurá Supabase para tener login real.</p>
           )}
+          <FirmaDeAutor settings={catalog.settings} className="mt-6" />
         </div>
       </div>
     );
@@ -5252,6 +5284,28 @@ function SettingsPanel({ catalog, onSave, isOwner }) {
         </div>
       </div>
       <StaffEditor staff={s.staff || []} onChange={(v) => set("staff", v)} isOwner={isOwner} />
+
+      {isOwner && (
+        <div className="mt-6 p-4 rounded-2xl" style={{ background: "#11131b", border: "1px solid #1f2430" }}>
+          <div className="font-bold text-sm c-gold mb-1">✍ Firma del desarrollador</div>
+          <p className="text-[11px] c-muted mb-3 leading-relaxed">
+            Aparece abajo de la tienda y en la pantalla de ingreso al panel, en letra chica.
+            Dejalo vacío para no mostrar nada.
+          </p>
+          <Field label="Nombre" value={s.developerName || ""} onChange={(v) => set("developerName", v)} placeholder="ALTech" />
+          <div className="mt-2">
+            <Field label="Sitio o contacto (opcional, hace que el nombre sea un enlace)"
+                   value={s.developerUrl || ""} onChange={(v) => set("developerUrl", v)}
+                   placeholder="altech.com.ar o wa.me/5493875000000" />
+          </div>
+          <div className="mt-3 p-2.5 rounded-xl text-[11px] c-tan2" style={{ background: "#171a24" }}>
+            Así se va a ver:
+            {(s.developerName || "").trim()
+              ? <FirmaDeAutor settings={s} className="mt-1" align="left" />
+              : <span className="c-brown"> nada, está vacío</span>}
+          </div>
+        </div>
+      )}
 
       {isOwner && (
         <AccesosPanel
