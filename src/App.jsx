@@ -1358,14 +1358,11 @@ function ShopView({ catalog, onGoAdmin }) {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-2"
+      {/* La dirección y el nombre ya están en la franja de arriba, fijos en
+          toda la página: acá solo cierra la firma. */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5"
            style={{ borderTop: "1px solid #171a24" }}>
-        <div className="text-[11px] c-muted text-center leading-relaxed">
-          <div className="font-bold c-tan2">{catalog.settings.storeName}</div>
-          <div>{catalog.settings.address} · {catalog.settings.city}</div>
-          <div>{catalog.settings.storeHours}</div>
-        </div>
-        <FirmaDeAutor settings={catalog.settings} className="mt-4" />
+        <FirmaDeAutor settings={catalog.settings} />
       </div>
 
       {/* Floating cart bar — mobile/tablet only, desktop uses the sidebar */}
