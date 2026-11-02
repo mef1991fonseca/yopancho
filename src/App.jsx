@@ -1524,21 +1524,48 @@ function OrderSidebar({ cart, total, mode, onModeChange, onChangeQty, onRemove, 
   );
 }
 
+// Un número argentino suelto —"3874876304"— no sirve como wa.me: hace falta
+// el 54 del país y el 9 de celular. Esto los agrega, respeta lo que ya venga
+// internacional y deja pasar el 0 inicial que a veces se escribe.
+function numeroDeWhatsApp(valor) {
+  const crudo = String(valor || "").trim();
+  const digitos = crudo.replace(/\D/g, "");
+  if (!digitos) return "";
+  if (crudo.startsWith("+")) return digitos;            // ya vino completo
+  if (digitos.startsWith("54")) {
+    return digitos.startsWith("549") ? digitos : `549${digitos.slice(2)}`;
+  }
+  return `549${digitos.replace(/^0+/, "")}`;
+}
+
+// El campo acepta las dos cosas: un sitio o un teléfono. Si no tiene letras,
+// es un teléfono.
+function enlaceDeContacto(valor) {
+  const v = String(valor || "").trim();
+  if (!v) return "";
+  if (/[a-zA-Z]/.test(v)) return /^https?:\/\//i.test(v) ? v : `https://${v}`;
+  const numero = numeroDeWhatsApp(v);
+  return numero ? `https://wa.me/${numero}` : "";
+}
+
 // La firma de quien hizo el sistema. Se configura en Ajustes y si queda
 // vacía no se dibuja nada: el local puede ser de otro cliente mañana.
 function FirmaDeAutor({ settings, className = "", align = "center" }) {
   const nombre = (settings.developerName || "").trim();
   if (!nombre) return null;
-  const url = (settings.developerUrl || "").trim();
-  const texto = `Sistema desarrollado por ${nombre}`;
+  const href = enlaceDeContacto(settings.developerUrl);
+  const contenido = (
+    <>
+      Sistema desarrollado por <span className="font-bold c-tan2">{nombre}</span>
+    </>
+  );
   return (
-    <div className={`text-[10px] c-tan ${align === "center" ? "text-center" : ""} ${className}`}>
-      {url ? (
-        <a href={/^https?:\/\//i.test(url) ? url : `https://${url}`}
-           target="_blank" rel="noreferrer" className="underline">
-          {texto}
+    <div className={`text-xs c-tan ${align === "center" ? "text-center" : ""} ${className}`}>
+      {href ? (
+        <a href={href} target="_blank" rel="noreferrer" className="hover:underline">
+          {contenido}
         </a>
-      ) : texto}
+      ) : contenido}
     </div>
   );
 }
@@ -3433,7 +3460,7 @@ function AvisoDeCobro({ settings, quien, onSave }) {
     await onSave({ ...settings, cobro: { ...cobro, pagadoHasta: estado.periodo } });
   }
 
-  const wsp = (cobro.whatsapp || "").replace(/\D/g, "");
+  const wsp = numeroDeWhatsApp(cobro.whatsapp);
 
   return (
     <div
@@ -5296,9 +5323,9 @@ function SettingsPanel({ catalog, onSave, isOwner }) {
           </p>
           <Field label="Nombre" value={s.developerName || ""} onChange={(v) => set("developerName", v)} placeholder="ALTech" />
           <div className="mt-2">
-            <Field label="Sitio o contacto (opcional, hace que el nombre sea un enlace)"
+            <Field label="WhatsApp o sitio (opcional, hace que el nombre sea un enlace)"
                    value={s.developerUrl || ""} onChange={(v) => set("developerUrl", v)}
-                   placeholder="altech.com.ar o wa.me/5493875000000" />
+                   placeholder="3874876304 o altech.com.ar" />
           </div>
           <div className="mt-3 p-2.5 rounded-xl text-[11px] c-tan2" style={{ background: "#171a24" }}>
             Así se va a ver:
@@ -5391,7 +5418,7 @@ function SettingsPanel({ catalog, onSave, isOwner }) {
                     </label>
 
                     <Field
-                      label="WhatsApp para el botón de aviso (solo números con código de país)"
+                      label="WhatsApp para el botón de aviso"
                       value={c.whatsapp || ""}
                       onChange={(v) => setC("whatsapp", v)}
                       placeholder="5493875000000"
