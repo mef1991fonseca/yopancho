@@ -940,8 +940,10 @@ function ShopView({ catalog, onGoAdmin }) {
   const heroPrice = heroItem ? (heroItem.variants ? heroItem.variants[0].price : heroItem.price) : null;
   const showAll = activeCat === "__all__";
 
+  const hayBarraFlotante = cartCount > 0 || !!myOrder;
+
   return (
-    <div className="pb-24 lg:pb-10">
+    <div className={`${hayBarraFlotante ? "pb-24" : "pb-4"} lg:pb-10`}>
       {/* Top promo strip */}
       <div className="text-center text-[10px] sm:text-[11px] font-medium font-mono-t py-2 px-4 tracking-wide" style={{ background: "#f2b705", color: "#0c0e16" }}>
         <FireIcon size={12} fill="#ea580c" stroke="#7c2d12" strokeWidth={0.75} className="inline -mt-0.5 mr-0.5" />
@@ -1356,14 +1358,14 @@ function ShopView({ catalog, onGoAdmin }) {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-10 pb-8"
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-2"
            style={{ borderTop: "1px solid #171a24" }}>
         <div className="text-[11px] c-muted text-center leading-relaxed">
           <div className="font-bold c-tan2">{catalog.settings.storeName}</div>
           <div>{catalog.settings.address} · {catalog.settings.city}</div>
           <div>{catalog.settings.storeHours}</div>
         </div>
-        <FirmaDeAutor settings={catalog.settings} className="mt-3" />
+        <FirmaDeAutor settings={catalog.settings} className="mt-2.5" />
       </div>
 
       {/* Floating cart bar — mobile/tablet only, desktop uses the sidebar */}
@@ -1530,7 +1532,7 @@ function FirmaDeAutor({ settings, className = "", align = "center" }) {
   const url = (settings.developerUrl || "").trim();
   const texto = `Sistema desarrollado por ${nombre}`;
   return (
-    <div className={`text-[10px] c-brown ${align === "center" ? "text-center" : ""} ${className}`}>
+    <div className={`text-[10px] c-tan ${align === "center" ? "text-center" : ""} ${className}`}>
       {url ? (
         <a href={/^https?:\/\//i.test(url) ? url : `https://${url}`}
            target="_blank" rel="noreferrer" className="underline">
