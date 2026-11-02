@@ -1365,7 +1365,7 @@ function ShopView({ catalog, onGoAdmin }) {
           <div>{catalog.settings.address} · {catalog.settings.city}</div>
           <div>{catalog.settings.storeHours}</div>
         </div>
-        <FirmaDeAutor settings={catalog.settings} className="mt-2.5" />
+        <FirmaDeAutor settings={catalog.settings} className="mt-4" />
       </div>
 
       {/* Floating cart bar — mobile/tablet only, desktop uses the sidebar */}
@@ -1560,7 +1560,7 @@ function FirmaDeAutor({ settings, className = "", align = "center" }) {
     </>
   );
   return (
-    <div className={`text-xs c-tan ${align === "center" ? "text-center" : ""} ${className}`}>
+    <div className={`text-sm c-tan ${align === "center" ? "text-center" : ""} ${className}`}>
       {href ? (
         <a href={href} target="_blank" rel="noreferrer" className="hover:underline">
           {contenido}
